@@ -1,0 +1,2742 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>排序可视化</title>
+<style>
+/* ── 变量 ── */
+:root {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-press: cubic-bezier(0.32, 0.72, 0, 1);
+  --bar-normal: #6b7280;
+  --bar-scanning: #60a5fa;
+  --bar-comparing: #f59e0b;
+  --bar-swapping: #ef4444;
+  --bar-sorted: #10b981;
+  --bar-scan-glow: rgba(96, 165, 250, 0.5);
+  --bar-swap-glow: rgba(239, 68, 68, 0.5);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #050505;
+  color: #e5e7eb;
+  font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  overflow: hidden;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  user-select: none;
+}
+
+/* ── 主容器 ── */
+.app {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px;
+}
+
+/* ── 标题 + 数量显示 ── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 1200px;
+  padding: 0 4px 10px;
+}
+
+.title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: #9ca3af;
+  text-transform: uppercase;
+}
+
+.count-display {
+  font-size: 14px;
+  color: #6b7280;
+  letter-spacing: 1px;
+}
+
+.count-display .num {
+  color: #60a5fa;
+  font-weight: 700;
+  font-size: 18px;
+}
+
+/* ── 灯条框 ── */
+.beam-frame {
+  position: relative;
+  width: 99vw;
+  height: 80vh;
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(15, 15, 20, 0.4), rgba(8, 8, 12, 0.6));
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* 循环灯条：一段亮光沿边框走 */
+.beam-frame::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--beam-angle),
+    transparent 0deg,
+    transparent 270deg,
+    #60a5fa 310deg,
+    #93c5fd 330deg,
+    #60a5fa 350deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: beam-rotate 3s linear infinite;
+  pointer-events: none;
+  z-index: 2;
+}
+
+@property --beam-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes beam-rotate {
+  to { --beam-angle: 360deg; }
+}
+
+/* 内部 canvas */
+#canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+}
+
+/* ── 控制按钮（分组布局）── */
+/* 所有分组优先排在同一行，横向空间不够时整组换到下一行 */
+.controls-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 10px 36px;
+  margin-top: 14px;
+  max-width: 100%;
+}
+
+/* 单个分组：组内按钮放不下时也允许内部换行 */
+.group-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 100%;
+}
+
+.group-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #6b7280;
+  font-size: 11px;
+  letter-spacing: 2px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.group-label::before {
+  content: "";
+  display: inline-block;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+}
+
+.group-label.g-basic::before  { background: #60a5fa; }
+.group-label.g-fast::before   { background: #22d3ee; }
+.group-label.g-noncmp::before { background: #34d399; }
+.group-label.g-weird::before  { background: #f59e0b; }
+
+/* ── 重置按钮（独立一行居中）── */
+.reset-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.btn {
+  position: relative;
+  padding: 10px 28px;
+  border: 1px solid rgba(107, 114, 128, 0.3);
+  border-radius: 8px;
+  background: rgba(30, 30, 38, 0.6);
+  color: #e5e7eb;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: transform 160ms var(--ease-out),
+              background 160ms var(--ease-out),
+              border-color 160ms var(--ease-out),
+              box-shadow 160ms var(--ease-out);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.btn:hover {
+  background: rgba(50, 50, 60, 0.7);
+  border-color: rgba(96, 165, 250, 0.4);
+  box-shadow: 0 0 16px rgba(96, 165, 250, 0.15);
+}
+
+.btn:active {
+  transform: scale(0.97);
+  transition: transform 100ms var(--ease-press);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-reset { border-color: rgba(107, 114, 128, 0.3); }
+.btn-reset:hover { border-color: rgba(251, 191, 36, 0.4); box-shadow: 0 0 16px rgba(251, 191, 36, 0.15); }
+
+.btn-sort {
+  border-color: rgba(96, 165, 250, 0.25);
+  background: rgba(30, 40, 55, 0.6);
+}
+.btn-sort:hover {
+  border-color: rgba(96, 165, 250, 0.5);
+  box-shadow: 0 0 20px rgba(96, 165, 250, 0.2);
+}
+
+.btn-select {
+  border-color: rgba(251, 146, 60, 0.25);
+  background: rgba(40, 35, 30, 0.6);
+}
+.btn-select:hover {
+  border-color: rgba(251, 146, 60, 0.5);
+  box-shadow: 0 0 20px rgba(251, 146, 60, 0.2);
+}
+
+.btn-insert {
+  border-color: rgba(167, 139, 250, 0.25);
+  background: rgba(35, 30, 45, 0.6);
+}
+.btn-insert:hover {
+  border-color: rgba(167, 139, 250, 0.5);
+  box-shadow: 0 0 20px rgba(167, 139, 250, 0.2);
+}
+
+.btn-quick {
+  border-color: rgba(34, 211, 238, 0.25);
+  background: rgba(30, 45, 50, 0.6);
+}
+.btn-quick:hover {
+  border-color: rgba(34, 211, 238, 0.5);
+  box-shadow: 0 0 20px rgba(34, 211, 238, 0.2);
+}
+
+.btn-merge {
+  border-color: rgba(236, 72, 153, 0.25);
+  background: rgba(45, 30, 40, 0.6);
+}
+.btn-merge:hover {
+  border-color: rgba(236, 72, 153, 0.5);
+  box-shadow: 0 0 20px rgba(236, 72, 153, 0.2);
+}
+
+.btn-heap {
+  border-color: rgba(251, 191, 36, 0.25);
+  background: rgba(45, 40, 25, 0.6);
+}
+.btn-heap:hover {
+  border-color: rgba(251, 191, 36, 0.5);
+  box-shadow: 0 0 20px rgba(251, 191, 36, 0.2);
+}
+
+.btn-count {
+  border-color: rgba(45, 212, 191, 0.25);
+  background: rgba(25, 40, 40, 0.6);
+}
+.btn-count:hover {
+  border-color: rgba(45, 212, 191, 0.5);
+  box-shadow: 0 0 20px rgba(45, 212, 191, 0.2);
+}
+
+.btn-radix {
+  border-color: rgba(129, 140, 248, 0.25);
+  background: rgba(30, 32, 50, 0.6);
+}
+.btn-radix:hover {
+  border-color: rgba(129, 140, 248, 0.5);
+  box-shadow: 0 0 20px rgba(129, 140, 248, 0.2);
+}
+
+.btn-bucket {
+  border-color: rgba(52, 211, 153, 0.25);
+  background: rgba(25, 42, 35, 0.6);
+}
+.btn-bucket:hover {
+  border-color: rgba(52, 211, 153, 0.5);
+  box-shadow: 0 0 20px rgba(52, 211, 153, 0.2);
+}
+
+/* 奇葩排序按钮：橙色系，区别于常规算法 */
+.btn-bogo {
+  border-color: rgba(245, 158, 11, 0.3);
+  background: rgba(45, 35, 18, 0.6);
+}
+.btn-bogo:hover {
+  border-color: rgba(245, 158, 11, 0.55);
+  box-shadow: 0 0 20px rgba(245, 158, 11, 0.2);
+}
+
+/* 睡眠排序按钮：紫蓝色系 */
+.btn-sleep {
+  border-color: rgba(139, 92, 246, 0.3);
+  background: rgba(35, 30, 50, 0.6);
+}
+.btn-sleep:hover {
+  border-color: rgba(139, 92, 246, 0.55);
+  box-shadow: 0 0 20px rgba(139, 92, 246, 0.2);
+}
+
+/* 煎饼排序按钮：金黄煎饼色系 */
+.btn-pancake {
+  border-color: rgba(251, 191, 36, 0.3);
+  background: rgba(45, 40, 20, 0.6);
+}
+.btn-pancake:hover {
+  border-color: rgba(251, 191, 36, 0.55);
+  box-shadow: 0 0 20px rgba(251, 191, 36, 0.2);
+}
+
+/* 奇迹排序按钮：粉紫幻彩色系，等奇迹降临 */
+.btn-miracle {
+  border-color: rgba(244, 114, 182, 0.3);
+  background: rgba(45, 30, 45, 0.6);
+}
+.btn-miracle:hover {
+  border-color: rgba(244, 114, 182, 0.55);
+  box-shadow: 0 0 20px rgba(244, 114, 182, 0.2);
+}
+
+/* 灭霸排序按钮：灭霸紫金铠甲色系 */
+.btn-thanos {
+  border-color: rgba(168, 85, 247, 0.3);
+  background: rgba(40, 30, 55, 0.6);
+}
+.btn-thanos:hover {
+  border-color: rgba(168, 85, 247, 0.55);
+  box-shadow: 0 0 20px rgba(168, 85, 247, 0.2);
+}
+
+/* ── 状态信息 ── */
+.status-bar {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #4b5563;
+  letter-spacing: 1px;
+  text-align: center;
+  min-height: 18px;
+}
+
+.status-bar .pass {
+  color: #10b981;
+}
+
+.status-bar .swap-count {
+  color: #ef4444;
+}
+
+.status-bar .scan-count {
+  color: #60a5fa;
+}
+
+/* ── 颜色图例 ── */
+.legend {
+  margin-top: 8px;
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  font-size: 11px;
+  color: #6b7280;
+  letter-spacing: 0.5px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* 排序原理说明（图例右侧） */
+.legend-desc {
+  color: #9ca3af;
+  font-size: 11px;
+  margin-left: 12px;
+  border-left: 1px solid rgba(107, 114, 128, 0.25);
+  padding-left: 12px;
+  display: none;
+}
+.legend-desc.show {
+  display: flex;
+}
+
+/* 数量输入框 */
+.count-input {
+  width: 70px;
+  padding: 4px 8px;
+  border: 1px solid rgba(107, 114, 128, 0.3);
+  border-radius: 4px;
+  background: rgba(30, 30, 38, 0.6);
+  color: #60a5fa;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  outline: none;
+  transition: border-color 160ms var(--ease-out);
+}
+
+.count-input:focus {
+  border-color: rgba(96, 165, 250, 0.5);
+}
+
+.count-input::-webkit-inner-spin-button {
+  opacity: 1;
+}
+
+.btn-apply {
+  padding: 4px 14px;
+  border: 1px solid rgba(96, 165, 250, 0.25);
+  border-radius: 4px;
+  background: rgba(30, 40, 55, 0.6);
+  color: #e5e7eb;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 160ms var(--ease-out),
+              background 160ms var(--ease-out),
+              border-color 160ms var(--ease-out);
+}
+
+.btn-apply:hover {
+  background: rgba(50, 60, 75, 0.7);
+  border-color: rgba(96, 165, 250, 0.5);
+}
+
+.btn-apply:active {
+  transform: scale(0.95);
+}
+@media (prefers-reduced-motion: reduce) {
+  .beam-frame::before { animation: none; }
+  .btn { transition: none; }
+  .btn:active { transform: none; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <span class="title">排序可视化</span>
+    <span class="count-display">竖条数量: <input type="number" class="count-input" id="countInput" min="2" max="50000" value="0" /> <button class="btn btn-apply" id="btnApply" type="button">应用</button></span>
+  </div>
+  <div class="beam-frame">
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="controls-wrap">
+    <div class="group-row">
+      <span class="group-label g-basic">基础</span>
+      <button class="btn btn-sort" id="btnSort" type="button">冒泡排序</button>
+      <button class="btn btn-select" id="btnSelectSort" type="button">选择排序</button>
+      <button class="btn btn-insert" id="btnInsertSort" type="button">插入排序</button>
+    </div>
+    <div class="group-row">
+      <span class="group-label g-fast">高效</span>
+      <button class="btn btn-quick" id="btnQuickSort" type="button">快速排序</button>
+      <button class="btn btn-merge" id="btnMergeSort" type="button">归并排序</button>
+      <button class="btn btn-heap" id="btnHeapSort" type="button">堆排序</button>
+    </div>
+    <div class="group-row">
+      <span class="group-label g-noncmp">非比较类</span>
+      <button class="btn btn-count" id="btnCountSort" type="button">计数排序</button>
+      <button class="btn btn-radix" id="btnRadixSort" type="button">基数排序</button>
+      <button class="btn btn-bucket" id="btnBucketSort" type="button">桶排序</button>
+    </div>
+    <div class="group-row">
+      <span class="group-label g-weird">奇葩</span>
+      <button class="btn btn-bogo" id="btnBogoSort" type="button">猴子排序</button>
+      <button class="btn btn-sleep" id="btnSleepSort" type="button">睡眠排序</button>
+      <button class="btn btn-pancake" id="btnPancakeSort" type="button">煎饼排序</button>
+      <button class="btn btn-miracle" id="btnMiracleSort" type="button">奇迹排序</button>
+      <button class="btn btn-thanos" id="btnThanosSort" type="button">灭霸排序</button>
+    </div>
+  </div>
+  <div class="reset-row">
+    <button class="btn btn-reset" id="btnReset" type="button">重置</button>
+  </div>
+  <div class="status-bar" id="statusBar"></div>
+  <div class="legend" id="legend">
+    <span class="legend-item"><span class="legend-dot" style="background:#60a5fa"></span>蓝色 — 扫描检查</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>橙色 — 当前最小/最大值</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>红色 — 交换</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#10b981"></span>绿色 — 已排序</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#a855f7"></span>紫色 — 灭霸湮灭中</span>
+    <span class="legend-item legend-desc" id="legendDesc"></span>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ════════════════════════════════════════
+   排序可视化 — Canvas + rAF 批量步进
+   ════════════════════════════════════════ */
+
+// ── DOM ──
+const canvas   = document.getElementById("canvas");
+const ctx       = canvas.getContext("2d", { alpha: true });
+const countInput = document.getElementById("countInput");
+const btnApply  = document.getElementById("btnApply");
+const btnReset  = document.getElementById("btnReset");
+const btnSort   = document.getElementById("btnSort");
+const btnSelectSort = document.getElementById("btnSelectSort");
+const btnInsertSort = document.getElementById("btnInsertSort");
+const btnQuickSort = document.getElementById("btnQuickSort");
+const btnMergeSort = document.getElementById("btnMergeSort");
+const btnHeapSort = document.getElementById("btnHeapSort");
+const btnCountSort = document.getElementById("btnCountSort");
+const btnRadixSort = document.getElementById("btnRadixSort");
+const btnBucketSort = document.getElementById("btnBucketSort");
+const btnBogoSort = document.getElementById("btnBogoSort");
+const btnSleepSort = document.getElementById("btnSleepSort");
+const btnPancakeSort = document.getElementById("btnPancakeSort");
+const btnMiracleSort = document.getElementById("btnMiracleSort");
+const btnThanosSort = document.getElementById("btnThanosSort");
+const statusBar = document.getElementById("statusBar");
+const legendDesc = document.getElementById("legendDesc");
+
+// ── 配置 ──
+const MIN_BARS = 2;
+const MAX_BARS = 50000;
+const DEFAULT_BARS = 500;
+
+// ── 颜色缓存（避免每帧 getComputedStyle）────
+const COLOR = {
+  normal:  "#6b7280",
+  scan:    "#60a5fa",
+  compare: "#f59e0b",
+  swap:    "#ef4444",
+  sorted:  "#10b981"
+};
+
+// ── 状态 ──
+let bars = [];           // { value }
+let barCount = 0;
+let unitW = 0;           // 每根竖条的宽度（含间隙）
+let barDrawW = 0;        // 实际绘制宽度
+let canvasW = 0;
+let canvasH = 0;
+let dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+let isSorting = false;
+let scanPass = 0;
+let totalSwaps = 0;
+let totalScans = 0;
+
+// ── 动画状态 ──
+let scanGlowPos = -1;
+let scanGlowAlpha = 0;
+let swappingIdx = -1;
+let swappingAlpha = 0;
+let sortedFromIdx = -1;   // 已排序区起始索引（从右往左 for bubble, 从左往右 for selection）
+let passFlashAlpha = 0;
+let currentMinIdx = -1;   // 选择排序：当前最小值位置 / 快速排序：pivot位置（橙色标记）
+let minAlpha = 0;        // 橙色标记透明度
+
+// ── 快速排序状态 ──
+let qsStack = [];        // 分区栈：[[lo, hi], ...]
+let qsLo = 0, qsHi = 0;  // 当前分区的左右边界
+let qsI = 0, qsJ = 0;    // i=小于pivot的边界指针, j=扫描指针
+let qsPivotVal = 0;      // pivot值
+let qsPartitioning = false; // 是否正在分区中
+let qsSortedSet = new Set(); // 已在最终位置的索引集合
+
+// ── 归并排序状态（迭代版，自底向上）──
+let msWidth = 1;         // 当前归并的子数组宽度（1,2,4,8...）
+let msLeft = 0;          // 当前归并的左边界
+let msMid = 0, msRight = 0; // 中点和右边界
+let msI = 0, msJ = 0;    // 左半指针、右半指针
+let msWriteIdx = 0;      // 写回位置
+let msTempArr = [];      // 临时数组
+let msMerging = false;   // 是否正在合并中
+let msLevels = 1;        // 当前合并层数（宽度倍增次数+1）
+let msSortedSet = new Set(); // 完全排好的区间标记
+
+// ── 堆排序状态（大顶堆，升序）──
+let hsPhase = "build";   // "build" 建堆 | "extract" 取顶 | "sift" 下沉中
+let hsBuildIdx = 0;      // 建堆：当前待下沉的父节点（从 n/2-1 递减）
+let hsHeapSize = 0;      // 堆有效长度（extract 阶段从 n 递减）
+let hsSiftIdx = 0;       // 下沉：当前节点位置
+let hsSiftEnd = 0;       // 下沉边界（堆有效长度）
+let hsDoneSet = new Set(); // 已在最终位置的索引集合
+
+// ── 计数排序状态（非比较排序）──
+// 三阶段：count（计数）→ prefix（前缀累加）→ output（放置）
+// 值映射为整数 key：key = round((value - 0.05) / 0.9 * (n-1))，范围 [0, n-1]
+let csPhase = "count";   // "count" | "prefix" | "output"
+let csCountIdx = 0;      // count 阶段扫描指针
+let csPrefixIdx = 0;     // prefix 阶段扫描指针
+let csOutIdx = 0;        // output 阶段扫描指针（从右往左）
+let csCountArr = [];     // 计数数组（大小 = barCount）
+let csInputArr = [];     // output 阶段读取的快照
+let csMaxKey = 0;        // 最大 key 值（= barCount - 1）
+let csSortedSet = new Set(); // 已放置到最终位置的索引集合
+
+// ── 基数排序状态（LSD，10进制桶）──
+// 值映射为整数 key ∈ [0, n-1]，按十进制位从低位到高位依次分桶：
+//  distribute — 扫描 bars，按当前位的值放入10个桶（逐个入桶）
+//  collect — 从桶0到桶9依次把元素写回 bars（逐个写回）
+// 位处理完的标志：处理完的位以下的元素已按低位排序
+let rsPhase = "distribute"; // "distribute" | "collect"
+let rsDigit = 0;        // 当前处理的位数（0=个位，1=十位...）
+let rsMaxDigits = 1;      // 最大位数
+let rsIdx = 0;          // 当前扫描/收集指针
+let rsBuckets = [];      // 10个桶：[[], [], ...]
+let rsBucketPos = [];      // 每个桶的读指针（避免shift的O(n)）
+let rsInputArr = [];      // collect 阶段读取的快照
+let rsSortedSet = new Set(); // 已在最终位置的索引集合（仅在最后一轮后有意义）
+
+// ── 桶排序状态（√n个桶 + 桶内插入排序）──
+// 三阶段：
+//  distribute — 扫描 bars，把每个元素放入对应范围的桶（就地原位，不移动）
+//  sortBuckets — 逐桶内做插入排序（只处理桶对应的索引区间）
+//  完成 — 全部标绿
+// 桶数 k = max(2, round(√n))，每个桶负责值域 [0.05 + i*0.9/k, 0.05 + (i+1)*0.9/k)
+// 桶内元素密集度：均匀数据下每桶约 √n 个，但元素是随机分布的，所以桶区间在 bars 上连续存储
+// 实现方式：先分配到桶数组，再按桶顺序写回 bars，最后对每个桶区间做插入排序
+let bsPhase = "distribute";  // "distribute" | "sort"
+let bsIdx = 0;           // distribute 扫描指针
+let bsBuckets = [];        // k 个桶：[[], [], ...]
+let bsBucketCount = 0;     // 桶数 k
+let bsCurBucket = 0;      // sort 阶段：当前正在排序的桶号
+let bsCurJ = 0;           // sort 阶段：当前桶内插入排序的外层指针（绝对索引）
+let bsCurK = 0;           // sort 阶段：插入排序内层指针（绝对索引）
+let bsRangeEnd = 0;       // sort 阶段：当前桶区间的末尾（绝对索引，不含）
+let bsSortedUpTo = 0;     // 已完成排序的绝对索引边界（左边已标绿）
+let bsSortedSet = new Set(); // 已在最终位置的索引集合
+
+// ── 猴子排序状态（Bogo Sort）──// 经典猴子排序：每一轮把整个数组随机洗牌，然后检查是否有序
+// 有序→完成；无序→再洗一次，直到“猴子敲出有序序列”为止
+// 动画分三阶段：
+//  shuffle — 随机打乱（红光标扫过，全条闪烁交换）
+//  check — 检查是否有序（蓝光标从左扫到右）
+//  done / giveup — 排到了（全绿）/ 达到尝试上限放弃
+// 时间复杂度：期望 O(n·n!)，实际就是听天由命
+let bogoPhase = "shuffle";  // "shuffle" | "check"
+let bogoAttempt = 0;        // 已尝试（洗牌）次数
+let bogoCheckIdx = 0;       // check 阶段扫描指针
+let bogoSortedSet = new Set(); // 已在最终位置的索引集合（只在完成后有意义）
+let bogoGaveUp = false;     // 是否因尝试次数太多而放弃
+
+// ── 睡眠排序状态（Sleep Sort）──
+// 经典睡眠排序：每根竖条按自身值“睡”不同时长（值越小醒得越早），
+// 醒来后飞到输出位落位（依次填 0,1,2,...），bars 真正被重排成有序。
+// 唤醒桶加速：ssWakeBuckets[t] = 在时间 t 醒来的原始索引列表，避免每步全量扫描
+let ssSrc = [];            // 原始值快照（开始排序时的 bars 值，防止原位被覆盖后读不到）
+let ssWakeBuckets = [];    // 唤醒桶：[虚拟时间] → [原始索引...]
+let ssWokeFlag = [];       // 每根原始竖条是否已醒
+let ssClock = 0;           // 当前虚拟时钟（虚拟毫秒）
+let ssMaxWake = 0;        // 最大唤醒时间
+let ssOutPos = 0;          // 下一个落位位置（已醒的依次填到 0,1,2,...）
+let ssSortedSet = new Set(); // 已落位的位置集合（渲染绿色用）
+
+// ── 煎饼排序状态（Pancake Sort）──
+// 只允许“翻煎饼”操作：选择一个前缀长度 k，把 bars[0..k) 整段反转。
+// 策略：每轮在未排序区 [0, pkHeap) 找最大值，两次翻转归位：
+//  扫描找最大（蓝光标）→ 翻转到顶（红光标，逐对交换动画）→ 翻到堆底归位（红光标）
+//  完成后未排序区右边界收缩，从右往左标绿。
+// 时间复杂度：O(n²)，翻转次数最多 2n-3 次
+let pkPhase = "scan";       // "scan" 扫描找最大 | "flipTop" 翻转到顶 | "flipBack" 翻转归位
+let pkHeap = 0;            // 未排序堆大小（右边界，未排序区 [0, pkHeap)）
+let pkScanIdx = 0;         // scan 阶段扫描指针
+let pkMaxIdx = 0;          // 当前未排序区最大值位置
+let pkFlipTopIdx = 0;      // flipTop 阶段翻转端点（从哪翻到顶）
+let pkFlipBackIdx = 0;     // flipBack 阶段翻转端点（翻回多远，=pkHeap-1）
+let pkFlipL = 0, pkFlipR = 0; // 当前翻转的双指针（左、右）
+let pkDoneSet = new Set(); // 已归位的索引集合（从右往左增长）
+
+// ── 奇迹排序状态（Miracle Sort）──
+// 网络梗算法：什么都不做，只反复“祈祷 + 检查”数组有没有自己变有序。
+// 动画两阶段循环：
+//  pray — 祈祷（粉紫光标从左往右扫过，什么都不改变）
+//  check — 检查是否有序（蓝光标逐对验证，发现逆序就重新祈祷）
+// 严格意义上永远不会自己有序，这里加一个“奇迹概率”：
+//  每轮祈祷有小概率触发奇迹，直接把数组变成有序（不然永远跑不完）
+// 时间复杂度：O(∞)（理论上），实际靠奇迹
+let mrPhase = "pray";        // "pray" 祈祷 | "check" 验证
+let mrCheckIdx = 0;          // check 阶段扫描指针
+let mrRound = 0;             // 已祈祷轮数
+let mrPrayIdx = 0;            // pray 阶段光标
+let mrMiracleHappened = false; // 是否发生了奇迹
+let mrPrayPos = -1;           // 祈祷光标位置（渲染用）
+let mrSortedSet = new Set();  // 已在最终位置的索引集合（完成后全量填充，渲染绿色用）
+
+// ── 灭霸排序状态（Thanos Sort）──
+// 梗算法：灭霸打响指，随机湮灭一半竖条，幸存者左移压实，重复响指直到只剩 1 根——天然有序。
+// 动画三阶段循环：
+//  snap — 打响指（全屏紫闪，随机定下湮灭名单，不标记不预告）
+//  dust — 挨根湮灭（名单内的竖条被"尘化"：值压成 0 只剩残桩，红光标逐根点过）
+//  compact — 压实（幸存者整体左移补洞，蓝光标从左往右扫，洞被逐个填上）
+// 剩 1 根即"完美平衡"完成。响指次数 ≈ log2(n)。
+let thPhase = "snap";        // "snap" 响指 | "dust" 湮灭 | "compact" 压实
+let thSnapCount = 0;         // 已打响指次数
+let thDustTotal = 0;         // 累计已湮灭竖条数
+let thAlive = 0;             // 当前幸存竖条数（含尚未压实的空位）
+let thDoomList = [];         // 本次响指的湮灭名单（原始索引数组）
+let thDoomSet = new Set();   // 湮灭名单快速查询（dust 阶段判断）
+let thDoomIdx = 0;           // dust 阶段：已湮灭到名单第几个
+let thDoomPos = -1;           // dust 阶段：当前正在湮灭的原始索引（渲染红光标用）
+let thCompactIdx = 0;        // compact 阶段：压实写指针
+let thCompactRead = 0;       // compact 阶段：压实读指针（只前进不回退，找右边最近的幸存者）
+let thFlashAlpha = 0;        // 响指紫闪全屏闪光透明度
+let thSortedSet = new Set(); // 已在最终位置的索引集合（完成后全量填充，渲染绿色用）
+let thAnimating = false;     // 手动模式：当前响指动画进行中（一指跑完自动停）
+let thFinished = false;      // 灭霸完成：只剩1根完美平衡，禁止再响指
+let thActive = false;        // 灭霸模式已开启（响过至少一次指，其他排序按钮禁用直到重置）
+
+// ── 排序模式 ──
+let sortMode = "bubble";  // "bubble" | "selection" | "insertion" | "quick" | "merge" | "heap" | "counting" | "radix" | "bucket" | "bogo" | "sleep" | "pancake" | "miracle" | "thanos"
+
+// ── 排序机状态 ──
+let sortI = 0;           // 外层循环指针
+let sortJ = 0;           // 内层循环指针
+let sortDone = false;
+let sortRafId = null;
+
+function resizeCanvas() {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvasW = Math.floor(rect.width);
+  canvasH = Math.floor(rect.height);
+  canvas.width = canvasW * dpr;
+  canvas.height = canvasH * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function calcBarCount() {
+  // 从输入框读取，clamp 到合法范围
+  let n = parseInt(countInput.value, 10);
+  if (isNaN(n) || n < MIN_BARS) n = MIN_BARS;
+  if (n > MAX_BARS) n = MAX_BARS;
+  countInput.value = n;
+  barCount = n;
+  return barCount;
+}
+
+function generateBars() {
+  calcBarCount();
+  unitW = canvasW / barCount;
+  const gap = unitW > 2 ? 1 : 0;
+  barDrawW = Math.max(1, unitW - gap);
+
+  bars = [];
+  for (let i = 0; i < barCount; i++) {
+    const h = (i / (barCount - 1)) * 0.9 + 0.05;
+    bars.push({ value: h });
+  }
+
+  shuffleBars();
+  countInput.value = barCount;
+  updateStatus();
+}
+
+function shuffleBars() {
+  for (let i = bars.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = bars[i].value;
+    bars[i].value = bars[j].value;
+    bars[j].value = tmp;
+  }
+  sortedFromIdx = -1;
+}
+
+// ── 渲染（按颜色分组批量绘制，减少 fillStyle 切换）──
+function render() {
+  ctx.clearRect(0, 0, canvasW, canvasH);
+
+  const minBarH = 2;
+  const sortedStart = (sortedFromIdx >= 0) ? sortedFromIdx : barCount;
+
+  // 特殊状态索引集合（跳过普通/已排序批量绘制）
+  const specialIdx = new Set();
+  if (swappingIdx >= 0) { specialIdx.add(swappingIdx); if (sortMode !== "counting" && sortMode !== "radix" && sortMode !== "bucket" && sortMode !== "bogo" && sortMode !== "sleep" && sortMode !== "pancake") specialIdx.add(swappingIdx + 1); }
+  if (scanGlowPos >= 0) { specialIdx.add(scanGlowPos); specialIdx.add(scanGlowPos + 1); }
+  if (currentMinIdx >= 0) specialIdx.add(currentMinIdx);
+  if (sortMode === "miracle" && mrPhase === "pray" && mrPrayPos >= 0) specialIdx.add(mrPrayPos);
+  if (sortMode === "thanos" && thDoomPos >= 0) specialIdx.add(thDoomPos);
+
+  // 画普通色竖条（批量）
+  ctx.fillStyle = COLOR.normal;
+  for (let i = 0; i < barCount; i++) {
+    if (specialIdx.has(i)) continue;
+    // 冒泡：sortedStart 右边是已排序区
+    // 选择/插入：sortedStart 左边是已排序区
+    // 快速：散布的已定位元素（pivot落位）
+    const isSorted = (sortMode === "bubble") ? (i >= sortedStart)
+      : (sortMode === "quick") ? qsSortedSet.has(i)
+      : (sortMode === "merge") ? msSortedSet.has(i)
+      : (sortMode === "heap") ? hsDoneSet.has(i)
+      : (sortMode === "counting") ? csSortedSet.has(i)
+      : (sortMode === "radix") ? rsSortedSet.has(i)
+      : (sortMode === "bucket") ? bsSortedSet.has(i)
+      : (sortMode === "bogo") ? bogoSortedSet.has(i)
+      : (sortMode === "sleep") ? ssSortedSet.has(i)
+      : (sortMode === "pancake") ? pkDoneSet.has(i)
+      : (sortMode === "miracle") ? mrSortedSet.has(i)
+      : (sortMode === "thanos") ? thSortedSet.has(i)
+      : (i < sortedStart);
+    if (isSorted) continue;
+    const h = Math.max(minBarH, bars[i].value * canvasH);
+    ctx.fillRect(i * unitW, canvasH - h, barDrawW, h);
+  }
+
+  // 画已排序色竖条（批量）
+  ctx.fillStyle = COLOR.sorted;
+  for (let i = 0; i < barCount; i++) {
+    if (specialIdx.has(i)) continue;
+    const isSorted = (sortMode === "bubble") ? (i >= sortedStart)
+      : (sortMode === "quick") ? qsSortedSet.has(i)
+      : (sortMode === "merge") ? msSortedSet.has(i)
+      : (sortMode === "heap") ? hsDoneSet.has(i)
+      : (sortMode === "counting") ? csSortedSet.has(i)
+      : (sortMode === "radix") ? rsSortedSet.has(i)
+      : (sortMode === "bucket") ? bsSortedSet.has(i)
+      : (sortMode === "bogo") ? bogoSortedSet.has(i)
+      : (sortMode === "sleep") ? ssSortedSet.has(i)
+      : (sortMode === "pancake") ? pkDoneSet.has(i)
+      : (sortMode === "miracle") ? mrSortedSet.has(i)
+      : (sortMode === "thanos") ? thSortedSet.has(i)
+      : (i < sortedStart);
+    if (!isSorted) continue;
+    const h = Math.max(minBarH, bars[i].value * canvasH);
+    ctx.fillRect(i * unitW, canvasH - h, barDrawW, h);
+  }
+
+  // 选择排序：当前最小值橙色标记
+  if (minAlpha > 0 && currentMinIdx >= 0) {
+    const h = Math.max(minBarH, bars[currentMinIdx].value * canvasH);
+    const x = currentMinIdx * unitW;
+    const y = canvasH - h;
+    ctx.fillStyle = `rgba(251, 146, 60, ${minAlpha})`;
+    ctx.fillRect(x, y, barDrawW, h);
+    ctx.fillStyle = `rgba(255, 255, 255, ${minAlpha * 0.4})`;
+    ctx.fillRect(x, y, barDrawW, h);
+    // 橙色亮线
+    const lineX = currentMinIdx * unitW + barDrawW / 2;
+    const gradM = ctx.createLinearGradient(0, 0, 0, canvasH);
+    gradM.addColorStop(0, `rgba(251, 146, 60, ${minAlpha * 0.1})`);
+    gradM.addColorStop(0.5, `rgba(251, 191, 36, ${minAlpha * 0.7})`);
+    gradM.addColorStop(1, `rgba(251, 146, 60, ${minAlpha * 0.1})`);
+    ctx.fillStyle = gradM;
+    ctx.fillRect(lineX - 2, 0, 4, canvasH);
+  }
+
+  // 扫描光标：纯色高亮 + 全高亮线
+  if (scanGlowAlpha > 0 && scanGlowPos >= 0) {
+    const h = Math.max(minBarH, bars[scanGlowPos].value * canvasH);
+    const x = scanGlowPos * unitW;
+    const y = canvasH - h;
+    ctx.fillStyle = `rgba(147, 197, 253, ${scanGlowAlpha})`;
+    ctx.fillRect(x, y, barDrawW, h);
+    ctx.fillStyle = `rgba(255, 255, 255, ${scanGlowAlpha * 0.5})`;
+    ctx.fillRect(x, y, barDrawW, h);
+
+    if (scanGlowPos + 1 < barCount) {
+      const h2 = Math.max(minBarH, bars[scanGlowPos + 1].value * canvasH);
+      const x2 = (scanGlowPos + 1) * unitW;
+      const y2 = canvasH - h2;
+      ctx.fillStyle = `rgba(96, 165, 250, ${scanGlowAlpha * 0.8})`;
+      ctx.fillRect(x2, y2, barDrawW, h2);
+    }
+
+    const lineX = scanGlowPos * unitW + barDrawW / 2;
+    const grad = ctx.createLinearGradient(0, 0, 0, canvasH);
+    grad.addColorStop(0, `rgba(96, 165, 250, ${scanGlowAlpha * 0.05})`);
+    grad.addColorStop(0.5, `rgba(147, 197, 253, ${scanGlowAlpha * 0.6})`);
+    grad.addColorStop(1, `rgba(96, 165, 250, ${scanGlowAlpha * 0.05})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(lineX - 1.5, 0, 3, canvasH);
+  }
+
+  // 交换光标：纯色高亮 + 全高亮线
+  if (swappingAlpha > 0 && swappingIdx >= 0) {
+    const indices = (sortMode === "counting" || sortMode === "radix" || sortMode === "bucket" || sortMode === "bogo" || sortMode === "sleep")
+      ? [swappingIdx]
+      : (sortMode === "bubble" || sortMode === "insertion" || sortMode === "merge" || sortMode === "heap")
+      ? [swappingIdx, swappingIdx + 1]
+      : (sortMode === "pancake")
+      ? [swappingIdx, pkFlipR + 1]
+      : [swappingIdx, currentMinIdx >= 0 ? currentMinIdx : swappingIdx];
+    for (const idx of indices) {
+      if (idx < 0 || idx >= barCount) continue;
+      const h = Math.max(minBarH, bars[idx].value * canvasH);
+      const x = idx * unitW;
+      const y = canvasH - h;
+      ctx.fillStyle = `rgba(248, 113, 113, ${swappingAlpha})`;
+      ctx.fillRect(x, y, barDrawW, h);
+      ctx.fillStyle = `rgba(255, 255, 255, ${swappingAlpha * 0.4})`;
+      ctx.fillRect(x, y, barDrawW, h);
+    }
+
+    const swapLineX = swappingIdx * unitW + unitW;
+    const grad2 = ctx.createLinearGradient(0, 0, 0, canvasH);
+    grad2.addColorStop(0, `rgba(239, 68, 68, ${swappingAlpha * 0.1})`);
+    grad2.addColorStop(0.5, `rgba(248, 113, 113, ${swappingAlpha * 0.8})`);
+    grad2.addColorStop(1, `rgba(239, 68, 68, ${swappingAlpha * 0.1})`);
+    ctx.fillStyle = grad2;
+    ctx.fillRect(swapLineX - 2.5, 0, 5, canvasH);
+  }
+
+  // 一轮扫描完成的全框闪光
+  if (passFlashAlpha > 0) {
+    ctx.strokeStyle = `rgba(96, 165, 250, ${passFlashAlpha * 0.4})`;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, canvasW - 2, canvasH - 2);
+  }
+
+  // 奇迹排序：祈祷光标（粉紫色，从左往右扫过，什么都不改变）
+  if (sortMode === "miracle" && mrPhase === "pray" && mrPrayPos >= 0 && mrPrayPos < barCount) {
+    const h = Math.max(minBarH, bars[mrPrayPos].value * canvasH);
+    const x = mrPrayPos * unitW;
+    const y = canvasH - h;
+    ctx.fillStyle = `rgba(244, 114, 182, 0.9)`;
+    ctx.fillRect(x, y, barDrawW, h);
+    ctx.fillStyle = `rgba(255, 255, 255, 0.45)`;
+    ctx.fillRect(x, y, barDrawW, h);
+    // 粉紫色亮线
+    const lineX = mrPrayPos * unitW + barDrawW / 2;
+    const gradP = ctx.createLinearGradient(0, 0, 0, canvasH);
+    gradP.addColorStop(0, `rgba(244, 114, 182, 0.1)`);
+    gradP.addColorStop(0.5, `rgba(249, 168, 212, 0.7)`);
+    gradP.addColorStop(1, `rgba(244, 114, 182, 0.1)`);
+    ctx.fillStyle = gradP;
+    ctx.fillRect(lineX - 2, 0, 4, canvasH);
+  }
+
+  // 响指紫闪：全屏紫色闪光（灭霸打了个响指）
+  if (thFlashAlpha > 0) {
+    ctx.fillStyle = `rgba(168, 85, 247, ${thFlashAlpha * 0.22})`;
+    ctx.fillRect(0, 0, canvasW, canvasH);
+    ctx.strokeStyle = `rgba(192, 132, 252, ${thFlashAlpha * 0.5})`;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(1.5, 1.5, canvasW - 3, canvasH - 3);
+  }
+
+  // 灭霸排序：湮灭光标（紫色，逐根尘化名单内的竖条）
+  if (sortMode === "thanos" && thPhase === "dust" && thDoomPos >= 0 && thDoomPos < barCount) {
+    const x = thDoomPos * unitW;
+    ctx.fillStyle = `rgba(168, 85, 247, 0.9)`;
+    ctx.fillRect(x, 0, barDrawW, canvasH);
+    ctx.fillStyle = `rgba(255, 255, 255, 0.45)`;
+    ctx.fillRect(x, 0, barDrawW, canvasH);
+  }
+}
+
+// ── 冒泡排序单步 ──
+function bubbleStep() {
+  if (sortJ < barCount - 1 - sortI) {
+    scanGlowPos = sortJ;
+    scanGlowAlpha = 1;
+    totalScans++;
+
+    if (bars[sortJ].value > bars[sortJ + 1].value) {
+      const tmp = bars[sortJ].value;
+      bars[sortJ].value = bars[sortJ + 1].value;
+      bars[sortJ + 1].value = tmp;
+      swappingIdx = sortJ;
+      swappingAlpha = 1;
+      totalSwaps++;
+    }
+
+    sortJ++;
+  } else {
+    passFlashAlpha = 1;
+    sortedFromIdx = barCount - sortI;
+    sortI++;
+    sortJ = 0;
+    scanPass = sortI;
+
+    if (sortI >= barCount - 1) {
+      sortDone = true;
+      sortedFromIdx = 0;
+    }
+  }
+}
+
+// ── 插入排序单步 ──
+// sortI = 待插入元素索引（从 1 开始）
+// sortJ = 当前元素向左扫描的位置
+// 已排序区 [0, sortI) 在左边
+function insertionStep() {
+  if (sortJ > 0) {
+    scanGlowPos = sortJ - 1;
+    scanGlowAlpha = 1;
+    totalScans++;
+
+    if (bars[sortJ - 1].value > bars[sortJ].value) {
+      const tmp = bars[sortJ - 1].value;
+      bars[sortJ - 1].value = bars[sortJ].value;
+      bars[sortJ].value = tmp;
+      swappingIdx = sortJ - 1;
+      swappingAlpha = 1;
+      totalSwaps++;
+      sortJ--;
+    } else {
+      passFlashAlpha = 1;
+      sortI++;
+      sortJ = sortI;
+      scanPass = sortI;
+      sortedFromIdx = sortI;
+      if (sortI >= barCount) {
+        sortDone = true;
+        sortedFromIdx = barCount;
+      }
+    }
+  } else {
+    passFlashAlpha = 1;
+    sortI++;
+    sortJ = sortI;
+    scanPass = sortI;
+    sortedFromIdx = sortI;
+    if (sortI >= barCount) {
+      sortDone = true;
+      sortedFromIdx = barCount;
+    }
+  }
+}
+
+// ── 快速排序单步（Lomuto 分区，迭代栈）──
+// qsStack 存 [lo, hi] 待处理分区
+// qsPartitioning 标记当前是否在分区中
+// pivot 取区间最后一个元素，橙色标记
+// 每完成一次分区，pivot 落位即最终位置（绿色）
+function quickStep() {
+  if (!qsPartitioning) {
+    // 从栈中弹出一个分区
+    if (qsStack.length === 0) {
+      sortDone = true;
+      return;
+    }
+    const range = qsStack.pop();
+    qsLo = range[0];
+    qsHi = range[1];
+
+    if (qsLo > qsHi) return;
+    if (qsLo === qsHi) {
+      qsSortedSet.add(qsLo);
+      scanPass++;
+      return;
+    }
+
+    // 开始分区：pivot = 最后一个元素
+    qsPivotVal = bars[qsHi].value;
+    qsI = qsLo;
+    qsJ = qsLo;
+    qsPartitioning = true;
+    currentMinIdx = qsHi; // 橙色标记 pivot
+    minAlpha = 1;
+  }
+
+  // 分区中：j 从 lo 扫到 hi-1
+  if (qsJ < qsHi) {
+    scanGlowPos = qsJ;
+    scanGlowAlpha = 1;
+    totalScans++;
+
+    if (bars[qsJ].value < qsPivotVal) {
+      if (qsI !== qsJ) {
+        const tmp = bars[qsI].value;
+        bars[qsI].value = bars[qsJ].value;
+        bars[qsJ].value = tmp;
+        swappingIdx = qsI;
+        swappingAlpha = 1;
+        totalSwaps++;
+      }
+      qsI++;
+    }
+    qsJ++;
+  } else {
+    // 分区结束：把 pivot 放到 i 位置
+    if (qsI !== qsHi) {
+      const tmp = bars[qsI].value;
+      bars[qsI].value = bars[qsHi].value;
+      bars[qsHi].value = tmp;
+      swappingIdx = qsI;
+      swappingAlpha = 1;
+      totalSwaps++;
+    }
+
+    qsSortedSet.add(qsI);
+
+    // 子分区入栈（先 push 右再 push 左，左先处理）
+    if (qsI + 1 < qsHi) qsStack.push([qsI + 1, qsHi]);
+    else if (qsI + 1 === qsHi) qsSortedSet.add(qsHi);
+
+    if (qsLo < qsI - 1) qsStack.push([qsLo, qsI - 1]);
+    else if (qsLo === qsI - 1) qsSortedSet.add(qsLo);
+
+    qsPartitioning = false;
+    passFlashAlpha = 1;
+    scanPass++;
+  }
+}
+
+// ── 归并排序单步（迭代自底向上）──
+// msWidth 从 1 开始倍增（1→2→4→8...），每轮合并相邻两个宽度为 msWidth 的子数组
+// 合并时用 msTempArr 暂存，再写回 bars[]
+// 每次“写回一个元素”算一步
+function mergeStep() {
+  if (!msMerging) {
+    // 寻找下一个要合并的区间
+    if (msLeft >= barCount) {
+      // 当前 width 全部合并完，宽度加倍
+      msWidth *= 2;
+      msLeft = 0;
+      if (msWidth >= barCount) {
+        sortDone = true;
+        return;
+      }
+      msLevels++;
+    }
+
+    msMid = Math.min(msLeft + msWidth, barCount);
+    msRight = Math.min(msLeft + msWidth * 2, barCount);
+
+    // 只有一个子数组或左半等于右半，无需合并
+    if (msMid >= msRight) {
+      msLeft += msWidth * 2;
+      return;
+    }
+
+    // 开始合并 [msLeft, msMid) 和 [msMid, msRight)
+    msI = msLeft;
+    msJ = msMid;
+    msWriteIdx = msLeft;
+    // 只拷贝本次合并区间到复用数组（全量快照在大数据量下是 O(n²)，会卡死）
+    for (let i = msLeft; i < msRight; i++) msTempArr[i] = bars[i].value;
+    msMerging = true;
+    scanPass = msWidth;
+  }
+
+  // 合并中：从左右两半中取较小的写入
+  if (msI < msMid && msJ < msRight) {
+    totalScans++; // 一次比较
+
+    const leftVal = msTempArr[msI];
+    const rightVal = msTempArr[msJ];
+
+    scanGlowPos = msWriteIdx;
+    scanGlowAlpha = 1;
+
+    if (leftVal <= rightVal) {
+      bars[msWriteIdx].value = leftVal;
+      msI++;
+    } else {
+      bars[msWriteIdx].value = rightVal;
+      msJ++;
+    }
+    swappingIdx = msWriteIdx;
+    swappingAlpha = 1;
+    totalSwaps++;
+    msWriteIdx++;
+  } else if (msI < msMid) {
+    // 左半有剩余
+    scanGlowPos = msWriteIdx;
+    scanGlowAlpha = 1;
+    bars[msWriteIdx].value = msTempArr[msI];
+    swappingIdx = msWriteIdx;
+    swappingAlpha = 1;
+    totalSwaps++;
+    msI++;
+    msWriteIdx++;
+  } else if (msJ < msRight) {
+    // 右半有剩余
+    scanGlowPos = msWriteIdx;
+    scanGlowAlpha = 1;
+    bars[msWriteIdx].value = msTempArr[msJ];
+    swappingIdx = msWriteIdx;
+    swappingAlpha = 1;
+    totalSwaps++;
+    msJ++;
+    msWriteIdx++;
+  } else {
+    // 合并完成，标记已排序区间（仅当 width 覆盖全程时才标绿）
+    if (msWidth * 2 >= barCount) {
+      for (let i = msLeft; i < msRight; i++) msSortedSet.add(i);
+    }
+    passFlashAlpha = 1;
+    msMerging = false;
+    msLeft += msWidth * 2;
+  }
+}
+
+// ── 堆排序单步（大顶堆，升序输出）──
+// 两阶段：
+//  1. build — 自底向上建堆：从最后一个父节点往前逐个下沉
+//  2. extract — 取顶：堆顶（最大值）与堆尾交换，堆长减1，堆顶重新下沉
+// 下沉一步 = 比较父子，若父小于最大子则交换，否则下沉结束
+// hsPhase: "build" | "extract"
+// hsSiftIdx >= 0 表示正在下沉中，-1 表示空闲
+function heapStep() {
+  // 空闲状态：决定下一步做什么
+  if (hsSiftIdx < 0) {
+    if (hsPhase === "build") {
+      if (hsBuildIdx < 0) {
+        // 建堆完成，进入取顶阶段
+        hsPhase = "extract";
+        return;
+      }
+      // 从当前父节点开始下沉
+      hsSiftIdx = hsBuildIdx;
+      hsSiftEnd = barCount;
+      hsBuildIdx--;
+    } else {
+      // extract：堆顶与堆尾交换
+      if (hsHeapSize <= 1) {
+        hsDoneSet.add(0);
+        sortDone = true;
+        return;
+      }
+      hsHeapSize--;
+      const tmp = bars[0].value;
+      bars[0].value = bars[hsHeapSize].value;
+      bars[hsHeapSize].value = tmp;
+      swappingIdx = 0;
+      swappingAlpha = 1;
+      totalSwaps++;
+      hsDoneSet.add(hsHeapSize);
+      passFlashAlpha = 1;
+      scanPass++;
+      // 堆顶重新下沉
+      hsSiftIdx = 0;
+      hsSiftEnd = hsHeapSize;
+    }
+  }
+
+  // 下沉中：比较当前节点与较大子节点
+  const left = hsSiftIdx * 2 + 1;
+  const right = left + 1;
+  let largest = hsSiftIdx;
+
+  scanGlowPos = hsSiftIdx;
+  scanGlowAlpha = 1;
+
+  if (left < hsSiftEnd && bars[left].value > bars[largest].value) largest = left;
+  totalScans++;
+  if (right < hsSiftEnd && bars[right].value > bars[largest].value) largest = right;
+  totalScans++;
+
+  if (largest !== hsSiftIdx) {
+    const tmp = bars[hsSiftIdx].value;
+    bars[hsSiftIdx].value = bars[largest].value;
+    bars[largest].value = tmp;
+    swappingIdx = hsSiftIdx;
+    swappingAlpha = 1;
+    totalSwaps++;
+    hsSiftIdx = largest; // 继续下沉
+  } else {
+    // 到位，本次下沉结束
+    hsSiftIdx = -1;
+  }
+}
+
+// ── 计数排序单步（非比较排序）──
+// 三阶段：
+//  1. count — 扫描 bars，统计每个 key 出现次数到 csCountArr
+//  2. prefix — 前缀累加，csCountArr[key] 变为「<= key 的元素总数」（即末尾位置）
+//  3. output — 从右往左扫描快照 csInputArr，按 csCountArr[key]-- 放到正确位置
+// 放置即最终位置，立即标绿
+function countingStep() {
+  if (csPhase === "count") {
+    // Phase 1: 计数
+    scanGlowPos = csCountIdx;
+    scanGlowAlpha = 1;
+    totalScans++;
+
+    const key = Math.round((bars[csCountIdx].value - 0.05) / 0.9 * (barCount - 1));
+    csCountArr[key]++;
+
+    csCountIdx++;
+    if (csCountIdx >= barCount) {
+      csPhase = "prefix";
+      csPrefixIdx = 1; // prefix[0] = count[0]，从 1 开始累加
+    }
+  } else if (csPhase === "prefix") {
+    // Phase 2: 前缀累加
+    totalScans++;
+    csCountArr[csPrefixIdx] += csCountArr[csPrefixIdx - 1];
+
+    csPrefixIdx++;
+    if (csPrefixIdx > csMaxKey) {
+      csPhase = "output";
+      csOutIdx = barCount - 1;
+      // 快照当前 bars 供 output 阶段读取（边读快照边写 bars）
+      csInputArr = bars.map(b => b.value);
+    }
+  } else {
+    // Phase 3: 放置（从右往左，保证稳定性）
+    const key = Math.round((csInputArr[csOutIdx] - 0.05) / 0.9 * (barCount - 1));
+    csCountArr[key]--;
+    const pos = csCountArr[key];
+    bars[pos].value = csInputArr[csOutIdx];
+
+    scanGlowPos = csOutIdx;
+    scanGlowAlpha = 1;
+    swappingIdx = pos;
+    swappingAlpha = 1;
+    totalSwaps++;
+    csSortedSet.add(pos);
+
+    csOutIdx--;
+    if (csOutIdx < 0) {
+      sortDone = true;
+    }
+  }
+}
+
+// ── 基数排序单步（LSD，10进制桶）──
+// 每轮处理一位：distribute（入桶）→ collect（写回）
+// 入桶一步 = 取当前元素的当前位，放入对应桶
+// 写回一步 = 从桶中依次取出元素写回 bars
+// 最后一位处理完后，整体有序，全部标绿
+function radixStep() {
+  if (rsPhase === "distribute") {
+    if (rsIdx >= barCount) {
+      // 入桶完成，切换到收集阶段
+      rsPhase = "collect";
+      rsIdx = 0;
+      return;
+    }
+    scanGlowPos = rsIdx;
+    scanGlowAlpha = 1;
+    totalScans++;
+
+    const key = Math.round((bars[rsIdx].value - 0.05) / 0.9 * (barCount - 1));
+    const digit = Math.floor(key / Math.pow(10, rsDigit)) % 10;
+    rsBuckets[digit].push(key);
+
+    rsIdx++;
+  } else {
+    // collect：从桶0到桶9依次写回（用读指针避免shift的O(n)）
+    let wrote = false;
+    for (let b = 0; b < 10 && !wrote; b++) {
+      if (rsBucketPos[b] < rsBuckets[b].length) {
+        const key = rsBuckets[b][rsBucketPos[b]];
+        rsBucketPos[b]++;
+        // 写回位置：当前收集指针
+        const pos = rsIdx;
+        // 反算回 value
+        bars[pos].value = (key / (barCount - 1)) * 0.9 + 0.05;
+        scanGlowPos = pos;
+        scanGlowAlpha = 1;
+        swappingIdx = pos;
+        swappingAlpha = 1;
+        totalSwaps++;
+        rsIdx++;
+        wrote = true;
+      }
+    }
+    if (!wrote) {
+      // 全部桶空，本轮完成
+      // 清空桶，准备下一位
+      rsBuckets = [[], [], [], [], [], [], [], [], [], []];
+      rsBucketPos = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+      rsPhase = "distribute";
+      rsIdx = 0;
+      rsDigit++;
+      passFlashAlpha = 1;
+      scanPass++;
+      if (rsDigit >= rsMaxDigits) {
+        // 所有位处理完，标绿全部
+        for (let len = 0; len < barCount; len++) rsSortedSet.add(len);
+        sortDone = true;
+      }
+    }
+  }
+}
+
+// ── 桶排序单步（√n个桶 + 桶内插入排序）──
+// distribute：扫描每个元素入桶（蓝光标）
+// sort：按桶序把桶内元素写回连续区间（保证桶间有序），再逐桶做插入排序（红光标）
+// 每完成一个桶，区间标绿，绿色从左往右推进
+function bucketStep() {
+  if (bsPhase === "distribute") {
+    if (bsIdx >= barCount) {
+      // 入桶完成，按桶序写回连续区间
+      let write = 0;
+      for (let b = 0; b < bsBucketCount; b++) {
+        for (let e = 0; e < bsBuckets[b].length; e++) {
+          bars[write].value = bsBuckets[b][e];
+          write++;
+        }
+      }
+      // 进入桶内排序阶段，从第一个非空桶开始
+      bsPhase = "sort";
+      bsCurBucket = 0;
+      bsSortedUpTo = 0;
+      // 跳过空桶，定位第一个非空桶
+      while (bsCurBucket < bsBucketCount && bsBuckets[bsCurBucket].length === 0) bsCurBucket++;
+      if (bsCurBucket >= bsBucketCount) {
+        // 全部桶空（不可能，但防御）：直接完成
+        for (let i = 0; i < barCount; i++) bsSortedSet.add(i);
+        sortDone = true;
+        return;
+      }
+      bsRangeEnd = bsSortedUpTo + bsBuckets[bsCurBucket].length;
+      bsCurJ = bsSortedUpTo + 1;
+      bsCurK = bsCurJ;
+      return;
+    }
+    scanGlowPos = bsIdx;
+    scanGlowAlpha = 1;
+    totalScans++;
+
+    const v = bars[bsIdx].value;
+    // 桶号 = 值落在哪个区间，值域 [0.05, 0.95] 均分 k 份
+    let b = Math.floor((v - 0.05) / 0.9 * bsBucketCount);
+    if (b < 0) b = 0;
+    if (b >= bsBucketCount) b = bsBucketCount - 1;
+    bsBuckets[b].push(v);
+
+    bsIdx++;
+  } else {
+    // sort 阶段：当前桶区间 [bsSortedUpTo, bsRangeEnd) 做插入排序
+    if (bsCurK > bsSortedUpTo && bars[bsCurK - 1].value > bars[bsCurK].value) {
+      // 内层：往前挪
+      const tmp = bars[bsCurK - 1].value;
+      bars[bsCurK - 1].value = bars[bsCurK].value;
+      bars[bsCurK].value = tmp;
+      swappingIdx = bsCurK - 1;
+      swappingAlpha = 1;
+      totalSwaps++;
+      bsCurK--;
+      totalScans++;
+    } else {
+      // 到位，下一个待插入元素
+      bsCurJ++;
+      if (bsCurJ >= bsRangeEnd) {
+        // 当前桶排序完成，区间标绿
+        for (let i = bsSortedUpTo; i < bsRangeEnd; i++) bsSortedSet.add(i);
+        passFlashAlpha = 1;
+        scanPass++;
+        bsSortedUpTo = bsRangeEnd;
+        // 找下一个非空桶
+        do { bsCurBucket++; } while (bsCurBucket < bsBucketCount && bsBuckets[bsCurBucket].length === 0);
+        if (bsCurBucket >= bsBucketCount) {
+          // 所有桶排完
+          sortDone = true;
+          return;
+        }
+        bsRangeEnd = bsSortedUpTo + bsBuckets[bsCurBucket].length;
+        bsCurJ = bsSortedUpTo + 1;
+        bsCurK = bsCurJ;
+      } else {
+        bsCurK = bsCurJ;
+      }
+    }
+  }
+}
+
+// ── 选择排序单步 ──
+// sortI = 已排序区右边界（左边 [0, sortI) 已排好）
+// sortJ = 当前扫描位置
+// currentMinIdx = 当前找到的最小值位置
+function selectionStep() {
+  if (sortJ < barCount) {
+    scanGlowPos = sortJ;
+    scanGlowAlpha = 1;
+    totalScans++;
+
+    // 找更小的值
+    if (currentMinIdx < 0 || bars[sortJ].value < bars[currentMinIdx].value) {
+      currentMinIdx = sortJ;
+      minAlpha = 1;
+    }
+
+    sortJ++;
+  } else {
+    // 一轮结束：把最小值交换到 sortI 位置
+    if (currentMinIdx >= 0 && currentMinIdx !== sortI) {
+      const tmp = bars[sortI].value;
+      bars[sortI].value = bars[currentMinIdx].value;
+      bars[currentMinIdx].value = tmp;
+      swappingIdx = sortI;
+      swappingAlpha = 1;
+      totalSwaps++;
+    }
+
+    passFlashAlpha = 1;
+    sortedFromIdx = sortI + 1;
+    sortI++;
+    sortJ = sortI;
+    currentMinIdx = -1;
+    minAlpha = 0;
+    scanPass = sortI;
+
+    if (sortI >= barCount - 1) {
+      sortDone = true;
+      sortedFromIdx = barCount; // 全部已排序
+    }
+  }
+}
+
+// ── 猴子排序单步（Bogo Sort）──
+// 每一大轮 = 一次洗牌 + 一次检查，两个阶段拆成单步动画：
+//  shuffle：每步随机交换一对元素（红光标），整个数组洗完才算一次尝试
+//  check：每步比较相邻两根竖条（蓝光标），发现逆序对→本轮失败，重新洗
+// 达成条件：检查完全程无逆序对 → 完成
+// 无次数上限：纯看运气，n≤5大概率能排中，n>7基本跑到天荒地老
+function bogoStep() {
+  if (bogoPhase === "shuffle") {
+    // 洗牌：每次一步随机交换一对元素，把整副牌洗乱
+    const i = Math.floor(Math.random() * barCount);
+    const j = Math.floor(Math.random() * barCount);
+    const tmp = bars[i].value;
+    bars[i].value = bars[j].value;
+    bars[j].value = tmp;
+    swappingIdx = i;
+    swappingAlpha = 1;
+    totalSwaps++;
+
+    // 本轮洗牌步数走完，进入检查阶段
+    // 洗牌步数与条数成正比：n 根竖条洗 n 步，保证看得出乱序变化
+    bogoCheckIdx++;
+    if (bogoCheckIdx >= barCount) {
+      bogoCheckIdx = 0;
+      bogoPhase = "check";
+      bogoAttempt++;
+      passFlashAlpha = 1;
+      scanPass = bogoAttempt; // 状态栏"轮"显示尝试次数
+    }
+  } else {
+    // check：逐对检查相邻元素是否有序
+    if (bogoCheckIdx < barCount - 1) {
+      scanGlowPos = bogoCheckIdx;
+      scanGlowAlpha = 1;
+      totalScans++;
+
+      if (bars[bogoCheckIdx].value > bars[bogoCheckIdx + 1].value) {
+        // 发现逆序对，本轮失败，重新洗牌
+        bogoPhase = "shuffle";
+        bogoCheckIdx = 0;
+        return;
+      }
+      bogoCheckIdx++;
+    } else {
+      // 全程无逆序对，排序完成
+      for (let i = 0; i < barCount; bogoSortedSet.add(i++));
+      sortDone = true;
+    }
+  }
+}
+
+// ── 睡眠排序单步（Sleep Sort）──
+// 每根竖条唤醒时间与值成正比，值越小醒得越早。
+// 每步推进虚拟时钟，到点的竖条依次"飞"到输出位 bars[0], bars[1], ... 落位。
+// 醒来顺序天然有序（值小先醒先落位），落位后数组即有序，零比较。
+// 全部落位 → 排序完成。
+function sleepStep() {
+  // 推进虚拟时钟：每步推进 1 个虚拟单位
+  ssClock++;
+  totalScans++; // 每步记一次"唤醒检查"
+
+  // 唤醒桶：把 ssClock 时刻该醒的竖条依次落位
+  const bucket = ssWakeBuckets[ssClock];
+  let wokeThisStep = false;
+  if (bucket) {
+    for (let k = 0; k < bucket.length; k++) {
+      const i = bucket[k]; // 原始索引
+      if (ssWokeFlag[i]) continue; // 已醒过，跳过（防重复）
+      // 该竖条醒了：把它的值从快照"飞"到输出位 ssOutPos 落位
+      bars[ssOutPos] = { value: ssSrc[i] };
+      // 原位置腾空：位置 > ssOutPos 的被搬走后画 0 高（空槽）
+      if (i > ssOutPos) {
+        bars[i] = { value: 0 };
+      }
+      ssWokeFlag[i] = true;
+      ssSortedSet.add(ssOutPos); // 落位位置标绿
+      ssOutPos++;
+      swappingIdx = ssOutPos - 1; // 红光标指向落位点
+      swappingAlpha = 1;
+      totalSwaps++; // 落位一次
+      wokeThisStep = true;
+    }
+  }
+
+  if (wokeThisStep) {
+    passFlashAlpha = 1;
+  }
+
+  // 全部竖条落位（或时钟走满）→ 排序完成
+  // 防御：桶有缺口时（部分时间点无竖条醒），时钟走满后把剩余未醒的按序补落
+  if (ssOutPos >= barCount || ssClock >= ssMaxWake) {
+    if (ssOutPos < barCount) {
+      // 仍有未落位：把剩余未醒的按原索引顺序补落（乱序值不会破坏已落位前缀）
+      for (let i = 0; i < barCount && ssOutPos < barCount; i++) {
+        if (!ssWokeFlag[i]) {
+          bars[ssOutPos] = { value: ssSrc[i] };
+          if (i > ssOutPos) bars[i] = { value: 0 };
+          ssWokeFlag[i] = true;
+          ssSortedSet.add(ssOutPos);
+          ssOutPos++;
+        }
+      }
+    }
+    sortDone = true;
+  }
+}
+
+// ── 煎饼排序单步（Pancake Sort）──
+// 只允许翻前缀：选 k，把 bars[0..k) 反转。每轮三阶段把未排序区最大值归位：
+//  scan — 蓝光标扫 [0, pkHeap) 找最大值位置 pkMaxIdx
+//  flipTop — 若最大值不在顶部，翻前缀 [0, pkMaxIdx] 把它翻到顶（红光标逐对交换）
+//  flipBack — 翻前缀 [0, pkHeap-1] 把顶部的最大值翻到未排序区最右端归位（红光标）
+// 归位后 pkDoneSet 加 pkHeap-1，堆收缩，循环至堆剩 1 根完成。
+function pancakeStep() {
+  if (pkHeap <= 1) {
+    // 堆只剩1根（或0），全部归位，完成
+    pkDoneSet.add(0);
+    sortDone = true;
+    return;
+  }
+
+  if (pkPhase === "scan") {
+    // 扫描未排序区找最大值
+    scanGlowPos = pkScanIdx;
+    scanGlowAlpha = 1;
+    totalScans++;
+    if (bars[pkScanIdx].value > bars[pkMaxIdx].value) {
+      pkMaxIdx = pkScanIdx;
+      currentMinIdx = pkScanIdx; // 复用橙色标记：当前最大值位置
+      minAlpha = 1;
+    }
+    pkScanIdx++;
+    if (pkScanIdx >= pkHeap) {
+      // 扫描完成，准备翻转到顶
+      if (pkMaxIdx === pkHeap - 1) {
+        // 最大值已在未排序区最右端，直接归位，无需翻转
+        pkDoneSet.add(pkHeap - 1);
+        passFlashAlpha = 1;
+        scanPass++;
+        pkHeap--;
+        pkScanIdx = 0;
+        pkMaxIdx = 0;
+        currentMinIdx = -1;
+        minAlpha = 0;
+      } else if (pkMaxIdx === 0) {
+        // 最大值已在顶部，直接进入翻底
+        pkPhase = "flipBack";
+        pkFlipBackIdx = pkHeap - 1;
+        pkFlipL = 0;
+        pkFlipR = pkFlipBackIdx;
+        currentMinIdx = -1;
+        minAlpha = 0;
+      } else {
+        // 翻转 [0, pkMaxIdx] 把最大值翻到顶
+        pkPhase = "flipTop";
+        pkFlipTopIdx = pkMaxIdx;
+        pkFlipL = 0;
+        pkFlipR = pkFlipTopIdx;
+        // 清橙色标记：进入翻转阶段，最大值旧位置的橙色不再需要
+        currentMinIdx = -1;
+        minAlpha = 0;
+      }
+    }
+  } else if (pkPhase === "flipTop") {
+    // 逐对交换翻转前缀 [0, pkFlipTopIdx]
+    if (pkFlipL < pkFlipR) {
+      const tmp = bars[pkFlipL].value;
+      bars[pkFlipL].value = bars[pkFlipR].value;
+      bars[pkFlipR].value = tmp;
+      swappingIdx = pkFlipL;
+      swappingAlpha = 1;
+      totalSwaps++;
+      pkFlipL++;
+      pkFlipR--;
+    } else {
+      // 翻转完成，最大值已到顶部，进入翻底归位
+      pkPhase = "flipBack";
+      pkFlipBackIdx = pkHeap - 1;
+      pkFlipL = 0;
+      pkFlipR = pkFlipBackIdx;
+    }
+  } else {
+    // flipBack：逐对交换翻转前缀 [0, pkHeap-1]，把顶部最大值归位到堆底
+    if (pkFlipL < pkFlipR) {
+      const tmp = bars[pkFlipL].value;
+      bars[pkFlipL].value = bars[pkFlipR].value;
+      bars[pkFlipR].value = tmp;
+      swappingIdx = pkFlipL;
+      swappingAlpha = 1;
+      totalSwaps++;
+      pkFlipL++;
+      pkFlipR--;
+    } else {
+      // 归位完成：最大值落在 pkHeap-1
+      pkDoneSet.add(pkHeap - 1);
+      passFlashAlpha = 1;
+      scanPass++; // 一轮（一次归位）计数
+      pkHeap--;
+      pkPhase = "scan";
+      pkScanIdx = 0;
+      pkMaxIdx = 0;
+      currentMinIdx = -1;
+      minAlpha = 0;
+    }
+  }
+}
+
+// ── 奇迹排序单步（Miracle Sort）──
+// 正宗奇迹排序：什么都不做，只反复"祈祷 + 验证"：
+//  pray — 粉紫光标从左扫到右，什么也不改变，虔诚祈祷
+//  check — 蓝光标逐对验证，发现逆序对扫完整轮后回到 pray 再来一轮
+// 理论上奇迹永远不会发生（数组不会自己变有序），无限循环直到刷新页面。
+function miracleStep() {
+  if (mrPhase === "pray") {
+    // 祈祷光标扫过，什么都不改变
+    mrPrayPos = mrPrayIdx;
+    mrPrayIdx++;
+    totalScans++; // 记一次"祈祷"
+    if (mrPrayIdx >= barCount) {
+      // 一轮祈祷结束，轮数+1，进入验证
+      mrRound++;
+      mrPrayIdx = 0;
+      mrPrayPos = -1;
+      mrPhase = "check";
+      mrCheckIdx = 0;
+      scanPass = mrRound; // 状态栏"轮"显示祈祷轮数
+    }
+  } else {
+    // check：逐对验证是否有序（发现逆序对扫完本轮再回祈祷，验证过程看得清）
+    if (mrCheckIdx < barCount - 1) {
+      scanGlowPos = mrCheckIdx;
+      scanGlowAlpha = 1;
+      if (bars[mrCheckIdx].value > bars[mrCheckIdx + 1].value) {
+        // 发现逆序对：扫完本轮剩余部分再回祈祷（一次性扫完，不中断）
+        mrCheckIdx = barCount - 1; // 跳到末尾，下轮循环自然结束本阶段
+        mrPhase = "pray";
+        mrPrayIdx = 0;
+        mrPrayPos = -1;
+        return;
+      }
+      mrCheckIdx++;
+    } else {
+      // 全程无逆序对：有序，完成
+      sortDone = true;
+    }
+  }
+}
+
+// ── 灭霸排序单步（Thanos Sort）──
+// 手动模式：点一次按钮响一次指，一轮动画（紫闪→湮灭→压实）跑完自动停
+// 压实后幸存者数量变少，条宽自适应放大铺满画布；只剩 1 根时"完美平衡"完成
+function thanosStep() {
+  if (thPhase === "snap") {
+    // 打响指：全屏紫闪，随机定湮灭名单
+    thFlashAlpha = 1;
+    if (thAlive <= 1) {
+      // 只剩 1 根：完美平衡，直接完成
+      sortDone = true;
+      return;
+    }
+    // 从幸存竖条（未湮灭的原始索引）里随机选一半
+    const aliveList = [];
+    for (let i = 0; i < barCount; i++) {
+      if (bars[i].value > 0) aliveList.push(i);
+    }
+    const doomCount = Math.floor(aliveList.length / 2); // 湮灭一半（向下取整，最少1根）
+    // 洗牌后取前 doomCount 个作为名单，保证随机
+    for (let i = aliveList.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = aliveList[i]; aliveList[i] = aliveList[j]; aliveList[j] = t;
+    }
+    thDoomList = aliveList.slice(0, Math.max(1, doomCount));
+    thDoomSet = new Set(thDoomList);
+    thDoomIdx = 0;
+    thDoomPos = -1;
+    thSnapCount++;
+    thPhase = "dust";
+  } else if (thPhase === "dust") {
+    // 挨根湮灭：名单内的竖条值压成 0，只剩 2px 残桩（尘化效果）
+    if (thDoomIdx < thDoomList.length) {
+      const i = thDoomList[thDoomIdx];
+      bars[i].value = 0; // 湮灭：高度归零成残桩
+      thDoomPos = i;
+      thDoomIdx++;
+      totalScans++;  // 记一次"湮灭"
+      totalSwaps++;  // 交换计数器借用为"湮灭"计数
+      thDustTotal++;
+    } else {
+      // 本轮湮灭完，进入压实
+      thDoomPos = -1;
+      thCompactIdx = 0;
+      thCompactRead = 0; // ★ 关键：读指针必须重置，否则上一轮压实后停在末尾，本轮会误判"没有幸存者"
+      thPhase = "compact";
+    }
+  } else {
+    // compact：单遍压实——读指针从左往右扫，遇到幸存者搬到写指针位置
+    // 写指针 thCompactIdx 只前进，读指针 thCompactRead 只前进，总扫描 O(n)
+    if (thCompactRead < barCount) {
+      // 读指针跳过空位（值为0的残桩）
+      while (thCompactRead < barCount && bars[thCompactRead].value <= 0) {
+        thCompactRead++;
+      }
+      if (thCompactRead < barCount) {
+        // 找到幸存者：若不在写位置，搬过来
+        if (thCompactIdx !== thCompactRead) {
+          bars[thCompactIdx].value = bars[thCompactRead].value;
+          bars[thCompactRead].value = 0;
+        }
+        thCompactIdx++;
+        thCompactRead++;
+        scanGlowPos = thCompactIdx - 1; // 蓝光标跟着写指针走
+        scanGlowAlpha = 1;
+      } else {
+        // 扫完整个数组：压实完成，幸存者全部在 [0, thAlive)
+        thAlive = thCompactIdx;
+        thPhase = "snap"; // 下一次响指待命
+        thanosRoundDone(); // ★ 手动模式：一轮响指动画跑完，自动停下等下一次点击
+      }
+    } else {
+      // 读指针到头（没有幸存者）：压实完成
+      thAlive = thCompactIdx;
+      thPhase = "snap";
+      thanosRoundDone();
+    }
+  }
+}
+
+// ── 灭霸排序：一轮响指结束处理 ──
+// 手动模式下自动停下（isSorting=false 可再次点击），并按幸存数自适应条宽铺满画布
+function thanosRoundDone() {
+  scanGlowPos = -1;
+  scanGlowAlpha = 0;
+  isSorting = false;       // 释放点击锁，允许再次响指
+  thAnimating = false;     // 本轮动画结束
+  // 自适应宽度：幸存条数变少，条变宽铺满整个画布（右侧残桩移出画布自动看不见）
+  if (thAlive > 0) {
+    unitW = canvasW / thAlive;
+    const gap = unitW > 2 ? 1 : 0;
+    barDrawW = Math.max(1, unitW - gap);
+  }
+  render();
+  // 正宗灭霸排序检查点：幸存区 [0, thAlive) 是否已有序？
+  // 有序 → 完美平衡，停止；只剩1根必然有序，属于最坏结局
+  let isOrdered = true;
+  for (let i = 1; i < thAlive; i++) {
+    if (bars[i - 1].value > bars[i].value) { isOrdered = false; break; }
+  }
+  if (isOrdered) {
+    // 幸存者已有序：完美平衡，彻底完成
+    thFinished = true;
+    btnThanosSort.disabled = true; // 完成后禁止再点灭霸
+    // 幸存区全量标绿
+    thSortedSet = new Set();
+    for (let i = 0; i < barCount; i++) thSortedSet.add(i);
+    // 完成紫闪（5帧递减）
+    let finCount = 0;
+    const finFlash = () => {
+      thFlashAlpha = 1 - finCount * 0.2;
+      render();
+      finCount++;
+      if (finCount < 5) requestAnimationFrame(finFlash);
+      else { thFlashAlpha = 0; render(); }
+    };
+    finFlash();
+    updateStatus(true);
+  } else {
+    // 幸存者仍无序：恢复灭霸按钮，等下一次响指
+    btnThanosSort.disabled = false;
+    updateStatus();
+  }
+}
+
+// ── rAF 主循环 ──
+// 不限速：目标 3 秒跑完
+// 每帧步数 = 总步数 / (3秒 × 60fps) = 总步数 / 180
+let stepsPerFrame = 1;
+let frameCounter = 0;
+const RENDER_EVERY = 3; // 每3帧渲染一次，渲染是瓶颈
+
+function sortFrame() {
+  if (sortDone) {
+    finishSort();
+    return;
+  }
+
+  for (let s = 0; s < stepsPerFrame && !sortDone; s++) {
+    if (sortMode === "thanos" && !thAnimating) break; // 手动模式：一轮响指跑完，提前停帧
+    if (sortMode === "bubble") bubbleStep();
+    else if (sortMode === "insertion") insertionStep();
+    else if (sortMode === "quick") quickStep();
+    else if (sortMode === "merge") mergeStep();
+    else if (sortMode === "heap") heapStep();
+    else if (sortMode === "counting") countingStep();
+    else if (sortMode === "radix") radixStep();
+    else if (sortMode === "bucket") bucketStep();
+    else if (sortMode === "bogo") bogoStep();
+    else if (sortMode === "sleep") sleepStep();
+    else if (sortMode === "pancake") pancakeStep();
+    else if (sortMode === "miracle") miracleStep();
+    else if (sortMode === "thanos") thanosStep();
+    else selectionStep();
+  }
+
+  // 衰减：交换光标每帧衰减
+  if (swappingAlpha > 0) swappingAlpha = Math.max(0, swappingAlpha - 0.15);
+  if (scanGlowAlpha > 0) scanGlowAlpha = Math.max(0, scanGlowAlpha - 0.05);
+  if (minAlpha > 0) minAlpha = Math.max(0, minAlpha - 0.08);
+
+  // passFlash 慢慢衰减
+  if (passFlashAlpha > 0) passFlashAlpha = Math.max(0, passFlashAlpha - 0.03);
+
+  // 灭霸响指紫闪快速衰减
+  if (thFlashAlpha > 0) thFlashAlpha = Math.max(0, thFlashAlpha - 0.12);
+
+  frameCounter++;
+  if (frameCounter % RENDER_EVERY === 0) {
+    render();
+  }
+  updateStatus();
+
+  if (!sortDone) {
+    if (sortMode === "thanos" && !thAnimating) {
+      return; // 灭霸手动模式：一轮结束即停，不再请求下一帧（等用户再点）
+    }
+    sortRafId = requestAnimationFrame(sortFrame);
+  } else {
+    finishSort();
+  }
+}
+
+function finishSort() {
+  if (sortMode === "quick") {
+    for (let i = 0; i < barCount; i++) qsSortedSet.add(i);
+  } else if (sortMode === "merge") {
+    for (let i = 0; i < barCount; i++) msSortedSet.add(i);
+  } else if (sortMode === "heap") {
+    for (let i = 0; i < barCount; i++) hsDoneSet.add(i);
+  } else if (sortMode === "counting") {
+    for (let i = 0; i < barCount; i++) csSortedSet.add(i);
+  } else if (sortMode === "radix") {
+    for (let i = 0; i < barCount; i++) rsSortedSet.add(i);
+  } else if (sortMode === "bucket") {
+    for (let i = 0; i < barCount; i++) bsSortedSet.add(i);
+  } else if (sortMode === "bogo") {
+    for (let i = 0; i < barCount; i++) bogoSortedSet.add(i);
+  } else if (sortMode === "sleep") {
+    for (let i = 0; i < barCount; i++) ssSortedSet.add(i);
+  } else if (sortMode === "pancake") {
+    for (let i = 0; i < barCount; i++) pkDoneSet.add(i);
+  } else if (sortMode === "miracle") {
+    // 奇迹排序：奇迹降临后数组已有序，全量标绿
+    for (let i = 0; i < barCount; i++) mrSortedSet.add(i);
+  } else if (sortMode === "thanos") {
+    // 灭霸排序：只剩1根即完美平衡，把幸存者及其右侧原位标绿
+    for (let i = 0; i < barCount; i++) thSortedSet.add(i);
+  } else {
+    sortedFromIdx = (sortMode === "bubble") ? 0 : barCount;
+  }
+  scanGlowPos = -1;
+  swappingIdx = -1;
+  currentMinIdx = -1;
+  scanGlowAlpha = 0;
+  swappingAlpha = 0;
+  minAlpha = 0;
+
+  // 完成闪光（3 帧递减）
+  let flashCount = 0;
+  function finishFlash() {
+    passFlashAlpha = 1 - flashCount * 0.33;
+    render();
+    flashCount++;
+    if (flashCount < 4) {
+      requestAnimationFrame(finishFlash);
+    } else {
+      passFlashAlpha = 0;
+      render();
+      isSorting = false;
+      btnReset.disabled = false;
+      btnSort.disabled = false;
+      btnSelectSort.disabled = false;
+      btnInsertSort.disabled = false;
+      btnQuickSort.disabled = false;
+      btnMergeSort.disabled = false;
+      btnHeapSort.disabled = false;
+      btnCountSort.disabled = false;
+      btnRadixSort.disabled = false;
+      btnBucketSort.disabled = false;
+      btnBogoSort.disabled = false;
+      btnSleepSort.disabled = false;
+      btnPancakeSort.disabled = false;
+      btnMiracleSort.disabled = false;
+      btnThanosSort.disabled = false;
+      // 灭霸手动模式：完美平衡后按钮保持禁用；一轮响指结束后本轮不动它（thanosRoundDone 已处理）
+      if (sortMode === "thanos") {
+        btnThanosSort.disabled = thFinished; // 完成后禁用，未完成时恢复可点（等下一次响指）
+      }
+      updateStatus(true);
+    }
+  }
+  finishFlash();
+}
+
+// ── 启动排序（通用）──
+function startSort(mode) {
+  if (isSorting) return;
+  // 灭霸已响过指：数组已被湮灭，跑其他排序会出脏数据，必须先重置
+  if (thActive && mode !== "thanos") {
+    statusBar.textContent = "灭霸已响过指，数组已被湮灭，请先点「重置」再选其他排序";
+    return;
+  }
+  isSorting = true;
+  sortMode = mode;
+  // 图例右侧显示当前排序原理简述
+  if (legendDesc && SORT_DESC[mode]) {
+    legendDesc.textContent = SORT_DESC[mode];
+    legendDesc.classList.add("show");
+  }
+  btnReset.disabled = true;
+  btnSort.disabled = true;
+  btnSelectSort.disabled = true;
+  btnInsertSort.disabled = true;
+  btnQuickSort.disabled = true;
+  btnMergeSort.disabled = true;
+  btnHeapSort.disabled = true;
+  btnCountSort.disabled = true;
+  btnRadixSort.disabled = true;
+  btnBucketSort.disabled = true;
+  btnBogoSort.disabled = true;
+  btnSleepSort.disabled = true;
+  btnPancakeSort.disabled = true;
+  btnMiracleSort.disabled = true;
+  btnThanosSort.disabled = true;
+
+  scanPass = 0;
+  totalSwaps = 0;
+  totalScans = 0;
+  sortI = 0;
+  sortJ = 0;
+  sortDone = false;
+  scanGlowPos = -1;
+  swappingIdx = -1;
+  currentMinIdx = -1;
+  scanGlowAlpha = 0;
+  swappingAlpha = 0;
+  minAlpha = 0;
+  passFlashAlpha = 0;
+
+  // 快速排序状态清零
+  qsStack = [];
+  qsPartitioning = false;
+  qsSortedSet = new Set();
+
+  // 归并排序状态清零
+  msWidth = 1;
+  msLeft = 0;
+  msMerging = false;
+  msTempArr = [];
+  msSortedSet = new Set();
+
+  // 堆排序状态清零
+  hsPhase = "build";
+  hsSiftIdx = -1;
+  hsDoneSet = new Set();
+
+  // 计数排序状态清零
+  csPhase = "count";
+  csCountIdx = 0;
+  csPrefixIdx = 0;
+  csOutIdx = 0;
+  csCountArr = [];
+  csInputArr = [];
+  csSortedSet = new Set();
+
+  // 基数排序状态清零
+  rsPhase = "distribute";
+  rsDigit = 0;
+  rsIdx = 0;
+  rsBuckets = [[], [], [], [], [], [], [], [], [], []];
+  rsBucketPos = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  rsInputArr = [];
+  rsSortedSet = new Set();
+
+  // 桶排序状态清零
+  bsPhase = "distribute";
+  bsIdx = 0;
+  bsBuckets = [];
+  bsBucketCount = 0;
+  bsCurBucket = 0;
+  bsCurJ = 0;
+  bsCurK = 0;
+  bsRangeEnd = 0;
+  bsSortedUpTo = 0;
+  bsSortedSet = new Set();
+
+  // 猴子排序状态清零
+  bogoPhase = "shuffle";
+  bogoAttempt = 0;
+  bogoCheckIdx = 0;
+  bogoSortedSet = new Set();
+  bogoGaveUp = false;
+
+  // 睡眠排序状态清零
+  ssSrc = [];
+  ssWakeBuckets = [];
+  ssWokeFlag = [];
+  ssClock = 0;
+  ssMaxWake = 0;
+  ssOutPos = 0;
+  ssSortedSet = new Set();
+
+  // 煎饼排序状态清零
+  pkPhase = "scan";
+  pkHeap = 0;
+  pkScanIdx = 0;
+  pkMaxIdx = 0;
+  pkFlipTopIdx = 0;
+  pkFlipBackIdx = 0;
+  pkFlipL = 0;
+  pkFlipR = 0;
+  pkDoneSet = new Set();
+
+  // 奇迹排序状态清零
+  mrPhase = "pray";
+  mrCheckIdx = 0;
+  mrRound = 0;
+  mrPrayIdx = 0;
+  mrMiracleHappened = false;
+  mrPrayPos = -1;
+  mrSortedSet = new Set();
+
+  if (mode === "bubble") {
+    sortedFromIdx = barCount; // 已排序区在右边，从 barCount 往左收缩
+    sortJ = 0;
+  } else if (mode === "insertion") {
+    sortedFromIdx = 1; // 首元素已有序，从 1 开始插入
+    sortI = 1;
+    sortJ = 1;
+  } else if (mode === "quick") {
+    sortedFromIdx = -1; // 快速排序不使用 sortedFromIdx，用 qsSortedSet
+    qsStack = [[0, barCount - 1]];
+    qsPartitioning = false;
+    qsSortedSet = new Set();
+  } else if (mode === "merge") {
+    sortedFromIdx = -1; // 归并排序不使用 sortedFromIdx，用 msSortedSet
+    msWidth = 1;
+    msLeft = 0;
+    msMerging = false;
+    msLevels = 1;
+    msTempArr = new Array(barCount); // 预分配复用，避免每次合并重复分配
+    msSortedSet = new Set();
+  } else if (mode === "heap") {
+    sortedFromIdx = -1; // 堆排序不使用 sortedFromIdx，用 hsDoneSet
+    hsPhase = "build";
+    hsBuildIdx = (barCount >> 1) - 1; // 最后一个父节点
+    hsHeapSize = barCount;
+    hsSiftIdx = -1;
+    hsDoneSet = new Set();
+  } else if (mode === "counting") {
+    sortedFromIdx = -1; // 计数排序不使用 sortedFromIdx，用 csSortedSet
+    csPhase = "count";
+    csCountIdx = 0;
+    csPrefixIdx = 0;
+    csOutIdx = 0;
+    csMaxKey = barCount - 1;
+    csCountArr = new Array(barCount).fill(0);
+    csInputArr = [];
+    csSortedSet = new Set();
+  } else if (mode === "radix") {
+    sortedFromIdx = -1; // 基数排序不使用 sortedFromIdx，用 rsSortedSet
+    rsPhase = "distribute";
+    rsDigit = 0;
+    rsIdx = 0;
+    rsMaxDigits = String(barCount - 1).length; // 最大位数
+    rsBuckets = [[], [], [], [], [], [], [], [], [], []];
+    rsBucketPos = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    rsInputArr = [];
+    rsSortedSet = new Set();
+  } else if (mode === "bucket") {
+    sortedFromIdx = -1; // 桶排序不使用 sortedFromIdx，用 bsSortedSet
+    bsPhase = "distribute";
+    bsIdx = 0;
+    bsBucketCount = Math.max(2, Math.round(Math.sqrt(barCount))); // 桶数 k = √n
+    bsBuckets = new Array(bsBucketCount).fill(0).map(() => []); // k 个空桶
+    bsCurBucket = 0;
+    bsCurJ = 0;
+    bsCurK = 0;
+    bsRangeEnd = 0;
+    bsSortedUpTo = 0;
+    bsSortedSet = new Set();
+  } else if (mode === "bogo") {
+    sortedFromIdx = -1; // 猴子排序不使用 sortedFromIdx，用 bogoSortedSet
+    bogoPhase = "shuffle";
+    bogoAttempt = 0;
+    bogoCheckIdx = 0;
+    bogoSortedSet = new Set();
+    bogoGaveUp = false;
+  } else if (mode === "sleep") {
+    sortedFromIdx = -1; // 睡眠排序不使用 sortedFromIdx，用 ssSortedSet
+    // 快照当前乱序值，建唤醒桶：值越小唤醒时间越早
+    // 值 [0.05, 0.95] 映射到唤醒时间 [1, barCount]
+    ssSrc = new Array(barCount);
+    ssWakeBuckets = new Array(barCount + 1); // 下标 1..barCount
+    ssWokeFlag = new Array(barCount).fill(false);
+    ssClock = 0;
+    ssOutPos = 0;
+    ssMaxWake = 1;
+    for (let i = 0; i < barCount; i++) {
+      ssSrc[i] = bars[i].value;
+      // value [0.05, 0.95] → wake [1, barCount]
+      const wake = Math.max(1, Math.round(((bars[i].value - 0.05) / 0.9) * barCount));
+      if (wake > ssMaxWake) ssMaxWake = wake;
+      if (!ssWakeBuckets[wake]) ssWakeBuckets[wake] = [];
+      ssWakeBuckets[wake].push(i);
+    }
+    ssSortedSet = new Set(); // 已落位的位置集合，落位一个加一个
+  } else if (mode === "pancake") {
+    sortedFromIdx = -1; // 煎饼排序不使用 sortedFromIdx，用 pkDoneSet
+    pkPhase = "scan";
+    pkHeap = barCount;
+    pkScanIdx = 0;
+    pkMaxIdx = 0;
+    pkFlipTopIdx = 0;
+    pkFlipBackIdx = 0;
+    pkFlipL = 0;
+    pkFlipR = 0;
+    pkDoneSet = new Set();
+  } else if (mode === "miracle") {
+    sortedFromIdx = -1; // 奇迹排序不使用 sortedFromIdx，用 mrSortedSet
+    mrPhase = "pray";
+    mrCheckIdx = 0;
+    mrRound = 0;
+    mrPrayIdx = 0;
+    mrMiracleHappened = false;
+    mrPrayPos = -1;
+    mrSortedSet = new Set();
+  } else if (mode === "thanos") {
+    sortedFromIdx = -1; // 灭霸排序不使用 sortedFromIdx，用 thSortedSet
+    thPhase = "snap";
+    thSnapCount = 0;
+    thDustTotal = 0;
+    thAlive = barCount;
+    thDoomList = [];
+    thDoomSet = new Set();
+    thDoomIdx = 0;
+    thDoomPos = -1;
+    thCompactIdx = 0;
+    thCompactRead = 0;
+    thFlashAlpha = 0;
+    thSortedSet = new Set();
+  } else {
+    sortedFromIdx = 0; // 已排序区在左边，从 0 往右增长
+    sortJ = 0;
+    currentMinIdx = 0;
+    minAlpha = 1;
+  }
+
+  // 动态每帧步数：让每种排序都跑约 3 秒（180帧）
+  // 总步数估算 = n × log2(n)（快排/归并）~ n²（冒泡/选择）
+  const LOG2 = (x) => Math.log(x) / Math.LN2;
+  let estSteps;
+  if (mode === "bubble" || mode === "selection") {
+    estSteps = (barCount * barCount) / 2;
+  } else if (mode === "insertion") {
+    estSteps = (barCount * barCount) / 4;
+  } else if (mode === "quick") {
+    estSteps = barCount * LOG2(barCount) * 1.4; // 分区扫描+落位
+  } else if (mode === "heap") {
+    estSteps = barCount * LOG2(barCount) * 2.5; // 建堆(n) + n次下沉(log n)，比较次数约2n log n
+  } else if (mode === "counting") {
+    estSteps = barCount * 3; // count(n) + prefix(n) + output(n) = 3n
+  } else if (mode === "radix") {
+    // d 位 × (入桶n + 收集n)，d = 最大位数
+    estSteps = rsMaxDigits * barCount * 2;
+  } else if (mode === "bucket") {
+    // 分配 n + 桶内插入排序：每桶约 n/k = √n 个元素，桶内插入平均比较 √n/4
+    // 总步数 ≈ n + k × (√n + √n×√n/4) ≈ n + n + n×√n/4，取实测校正系数
+    estSteps = barCount * 2 + (barCount * Math.sqrt(barCount)) / 3;
+  } else if (mode === "bogo") {
+    // 猴子排序步数不可预估（期望 n! 次尝试），取较高每帧步数让动画快速推进：
+    // 1000次尝试 × (洗牌n + 检查n) 在 ~10-15秒内跑完
+    estSteps = barCount * 200;
+  } else if (mode === "sleep") {
+    // 睡眠排序：每步推进1个虚拟时间单位，总虚拟时间 = barCount
+    // 但每步要扫描全部竖条，所以实际总步数 = barCount（虚拟时钟走 barCount 步）
+    estSteps = barCount;
+  } else if (mode === "pancake") {
+    // 煎饼排序：每轮扫描找最大 n 步 + 至多两次翻转（每次至多 n/2 对交换）
+    // 总步数 ≈ n × (n + n) = n² × 2... 实际每轮翻转总量远小于扫描，取 n²/2 近似
+    estSteps = (barCount * barCount) / 2 + barCount * 2;
+  } else if (mode === "miracle") {
+    // 奇迹排序：正宗版无限循环（祈祷+验证），步速固定慢速，不按总步数提速
+    // 每帧 1~2 步，让祈祷光标和验证光标都看得清楚
+    estSteps = 180; // 占位：每帧 1 步，步速不随条数变化
+  } else if (mode === "thanos") {
+    // 灭霸排序：每轮湮灭 n/2 步 + 压实约 n 步，共 log2(n) 轮
+    // 实测真实总步数 ≈ 湮灭(n-1) + 压实(≈n) + 响指(≈log2(n)) ≈ 2n
+    // （不是 n×log2(n)——压实是单遍扫描，不是每轮全量）
+    estSteps = barCount * 2 + 10;
+  } else { // merge
+    estSteps = barCount * LOG2(barCount) * 2;   // 比较数×2（写入总是n log n）
+  }
+
+  // 目标3秒 ≈ 180帧，每帧步数 = 总步数/180，但不低于1步
+  stepsPerFrame = Math.max(1, Math.ceil(estSteps / 180));
+  // 奇迹排序：固定慢速步进，每帧1~2步，不随条数提速（祈祷/验证过程要看得清）
+  if (mode === "miracle") {
+    stepsPerFrame = (barCount > 2000) ? 2 : 1;
+  }
+
+  sortRafId = requestAnimationFrame(sortFrame);
+}
+
+// ── 排序原理简述（点击排序后在图例右侧显示）──
+const SORT_DESC = {
+  bubble: "相邻两两比较，逆序则交换，大值像气泡一样逐步浮到右端",
+  selection: "每轮扫描找最小值，与未排序区首位交换，已排序区从左向右增长",
+  insertion: "逐个取出元素，在已排序区从右向左找插入位置，像理扑克牌一样",
+  quick: "选基准值分区，比基准小的放左边大的放右边，对子区间递归重复",
+  merge: "递归拆成最小单元，再两两归并合并，逐层返回有序整体",
+  heap: "先建大顶堆，反复将堆顶最大值与堆尾交换并缩堆，从右向左归位",
+  counting: "统计每个值出现次数，累加前缀和确定位置，直接放回输出数组",
+  radix: "从低位到高位逐位分桶（0~9），收集后按下一位继续，到位即有序",
+  bucket: "按值分入√n个桶，每桶内部插入排序，再逐桶合并输出",
+  bogo: "随机打乱整个数组，检查是否有序，不行就再打乱，全凭运气",
+  sleep: "每根竖条按自身值“睡”不同时长，值小的先醒飞到输出位落位",
+  pancake: "每轮找未排序区最大值，翻转到顶再翻归位，像翻煎饼一样只翻前缀",
+  miracle: "正宗摆烂：什么都不做，只反复祈祷并验证数组是否自己变有序，理论上永远等不到",
+  thanos: "正宗灭霸：响指随机湮灭一半、幸存者压实后检查是否已有序——有序即完美平衡，无序继续响，直到幸存者恰好有序或灭到只剩 1 根"
+};
+
+// ── 工具 ──
+const SORT_LABELS = { bubble: "冒泡排序", selection: "选择排序", insertion: "插入排序", quick: "快速排序", merge: "归并排序", heap: "堆排序", counting: "计数排序", radix: "基数排序", bucket: "桶排序", bogo: "猴子排序", sleep: "睡眠排序", pancake: "煎饼排序", miracle: "奇迹排序", thanos: "灭霸排序" };
+
+function updateStatus(done) {
+  const label = SORT_LABELS[sortMode] || "排序";
+  if (sortMode === "merge") {
+    // 归并排序：轮次用"层"，交换卖为"写入"
+    if (done) {
+      statusBar.innerHTML = `<span class="pass">${label}完成</span> · 共 ${msLevels} 层 · 比较 ${totalScans} 次 · 写入 ${totalSwaps} 次`;
+    } else if (isSorting) {
+      statusBar.innerHTML = `${label} · 第 ${msLevels} 层（宽度 <span class="scan-count">${scanPass}</span>）· 已比较 ${totalScans} 次 · 已写入 <span class="swap-count">${totalSwaps}</span> 次`;
+    } else {
+      statusBar.textContent = "";
+    }
+    return;
+  }
+  if (sortMode === "counting") {
+    // 计数排序：三阶段（计数→累加→放置），无比较，用"扫描"和"放置"
+    const phaseLabel = csPhase === "count" ? "计数" : csPhase === "prefix" ? "累加" : "放置";
+    if (done) {
+      statusBar.innerHTML = `<span class="pass">${label}完成</span> · 扫描 ${totalScans} 次 · 放置 ${totalSwaps} 次`;
+    } else if (isSorting) {
+      statusBar.innerHTML = `${label} · ${phaseLabel}阶段 · 已扫描 ${totalScans} 次 · 已放置 <span class="swap-count">${totalSwaps}</span> 次`;
+    } else {
+      statusBar.textContent = "";
+    }
+    return;
+  }
+  if (sortMode === "radix") {
+    // 基数排序：按位分桶收集，用"轮（位）"和"分配/收集"
+    const phaseLabel = rsPhase === "distribute" ? "分配" : "收集";
+    if (done) {
+      statusBar.innerHTML = `<span class="pass">${label}完成</span> · 共 ${scanPass} 位 · 分配 ${totalScans} 次 · 收集 ${totalSwaps} 次`;
+    } else if (isSorting) {
+      statusBar.innerHTML = `${label} · 第 <span class="scan-count">${rsDigit + 1}</span> 位（共${rsMaxDigits}位）· ${phaseLabel}中 · 已分配 ${totalScans} 次 · 已收集 <span class="swap-count">${totalSwaps}</span> 次`;
+    } else {
+      statusBar.textContent = "";
+    }
+    return;
+  }
+  if (sortMode === "bucket") {
+    // 桶排序：分配 + 桶内排序，用"桶"计数
+    if (done) {
+      statusBar.innerHTML = `<span class="pass">${label}完成</span> · 共 ${bsBucketCount} 桶 · 分配 ${totalScans} 次 · 交换 ${totalSwaps} 次`;
+    } else if (isSorting) {
+      const phaseLabel = bsPhase === "distribute" ? "分配中" : `排序第 ${bsCurBucket + 1} 桶`;
+      statusBar.innerHTML = `${label} · ${phaseLabel} · 已扫描 ${totalScans} 次 · 已交换 <span class="swap-count">${totalSwaps}</span> 次`;
+    } else {
+      statusBar.textContent = "";
+    }
+    return;
+  }
+  if (sortMode === "bogo") {
+    // 猴子排序：听天由命，用"尝试（洗牌）次数"和"乱洗/验证"阶段
+    const phaseLabel = bogoPhase === "shuffle" ? "乱洗中" : "验证中";
+    if (done) {
+      if (bogoGaveUp) {
+        statusBar.innerHTML = `<span class="pass">${label}放弃</span> · 尝试 ${bogoAttempt} 次仍未排中 · 交换 ${totalSwaps} 次 · 猴子下班了`;
+      } else {
+        statusBar.innerHTML = `<span class="pass">${label}成功</span> · 第 ${bogoAttempt} 次尝试就排中了 · 交换 ${totalSwaps} 次 · 猴子运气爆棚`;
+      }
+    } else if (isSorting) {
+      statusBar.innerHTML = `${label} · ${phaseLabel} · 已尝试 <span class="scan-count">${bogoAttempt}</span> 次 · 已交换 <span class="swap-count">${totalSwaps}</span> 次`;
+    } else {
+      statusBar.textContent = "";
+    }
+    return;
+  }
+  if (sortMode === "sleep") {
+    // 睡眠排序：零比较靠"等"，用"虚拟时钟"和"落位"计数
+    const placed = ssOutPos;
+    if (done) {
+      statusBar.innerHTML = `<span class="pass">${label}完成</span> · 虚拟时钟走满 ${ssMaxWake} 毫秒 · ${barCount} 根全部按时醒来落位 · 零比较`;
+    } else if (isSorting) {
+      statusBar.innerHTML = `${label} · 虚拟时钟 <span class="scan-count">${ssClock}</span> 毫秒 · 已落位 ${placed}/${barCount} 根 · 已唤醒 <span class="swap-count">${totalSwaps}</span> 根`;
+    } else {
+      statusBar.textContent = "";
+    }
+    return;
+  }
+  if (sortMode === "pancake") {
+    // 煎饼排序：只能翻前缀，用"轮（归位）"和"翻转"计数
+    const phaseLabel = pkPhase === "scan" ? "找最大" : pkPhase === "flipTop" ? "翻到顶" : "翻归位";
+    if (done) {
+      statusBar.innerHTML = `<span class="pass">${label}完成</span> · 共 ${scanPass} 轮 · 扫描 ${totalScans} 次 · 翻转交换 ${totalSwaps} 次`;
+    } else if (isSorting) {
+      statusBar.innerHTML = `${label} · ${phaseLabel} · 未归位剩 ${pkHeap} 根 · 已翻转 <span class="swap-count">${totalSwaps}</span> 次`;
+    } else {
+      statusBar.textContent = "";
+    }
+    return;
+  }
+  if (sortMode === "miracle") {
+    // 奇迹排序：什么都不做只祈祷，用"祈祷轮数"和"祈祷/验证"阶段
+    const phaseLabel = mrPhase === "pray" ? "虔诚祈祷中" : "验证中";
+    if (done) {
+      statusBar.innerHTML = `<span class="pass">${label}降临</span> · 祈祷 ${mrRound} 轮后终于等到奇迹 · 零交换 · 诚心所致`;
+    } else if (isSorting) {
+      statusBar.innerHTML = `${label} · ${phaseLabel} · 已祈祷 <span class="scan-count">${mrRound}</span> 轮 · 奇迹尚未降临，仍在等待`;
+    } else {
+      statusBar.textContent = "";
+    }
+    return;
+  }
+  if (sortMode === "thanos") {
+    // 灭霸排序（正宗·手动模式）：检查有序→响指灭一半→压实→再检查，有序即完美平衡
+    const phaseLabel = thPhase === "snap" ? "打响指" : thPhase === "dust" ? "湮灭中" : "压实中";
+    if (done || thFinished) {
+      if (thAlive <= 1) {
+        statusBar.innerHTML = `<span class="pass">${label}完美平衡</span> · 共响指 ${thSnapCount} 次 · 湮灭 ${thDustTotal} 根 · 灭到只剩 1 根（最坏结局）· 再点「重置」重新来过`;
+      } else {
+        statusBar.innerHTML = `<span class="pass">${label}完美平衡</span> · 响指 ${thSnapCount} 次后幸存者恰好有序 · 湮灭 ${thDustTotal} 根 · 幸存 ${thAlive} 根 · 再点「重置」重新来过`;
+      }
+    } else if (isSorting) {
+      statusBar.innerHTML = `${label} · ${phaseLabel} · 第 <span class="scan-count">${thSnapCount}</span> 次响指 · 已湮灭 <span class="swap-count">${thDustTotal}</span> 根`;
+    } else if (thActive) {
+      // 一轮结束待命：无序，提示再点一次响指
+      statusBar.innerHTML = `${label} · 幸存 ${thAlive} 根仍无序 · 再点一下响下一指`;
+    } else {
+      statusBar.textContent = "";
+    }
+    return;
+  }
+  if (done) {
+    statusBar.innerHTML = `<span class="pass">${label}完成</span> · 共 ${scanPass} 轮 · 比较 ${totalScans} 次 · 交换 ${totalSwaps} 次`;
+  } else if (isSorting) {
+    statusBar.innerHTML = `${label} · 第 <span class="scan-count">${scanPass}</span> 轮 · 已比较 ${totalScans} 次 · 已交换 <span class="swap-count">${totalSwaps}</span> 次`;
+  } else {
+    statusBar.textContent = "";
+  }
+}
+
+// ── 事件 ──
+btnApply.addEventListener("click", () => {
+  if (isSorting) return;
+  resizeCanvas();
+  generateBars();
+  render();
+});
+
+// 输入框回车也触发应用
+countInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    btnApply.click();
+  }
+});
+
+btnReset.addEventListener("click", () => {
+  if (isSorting) return;
+  shuffleBars();
+  scanPass = 0;
+  totalSwaps = 0;
+  totalScans = 0;
+  sortedFromIdx = -1;
+  currentMinIdx = -1;
+  scanGlowPos = -1;
+  swappingIdx = -1;
+  scanGlowAlpha = 0;
+  swappingAlpha = 0;
+  minAlpha = 0;
+  passFlashAlpha = 0;
+  qsStack = [];
+  qsPartitioning = false;
+  qsSortedSet = new Set();
+  msWidth = 1;
+  msLeft = 0;
+  msMerging = false;
+  msLevels = 1;
+  msTempArr = [];
+  msSortedSet = new Set();
+  hsPhase = "build";
+  hsBuildIdx = 0;
+  hsHeapSize = 0;
+  hsSiftIdx = -1;
+  hsDoneSet = new Set();
+  csPhase = "count";
+  csCountIdx = 0;
+  csPrefixIdx = 0;
+  csOutIdx = 0;
+  csCountArr = [];
+  csInputArr = [];
+  csSortedSet = new Set();
+  rsPhase = "distribute";
+  rsDigit = 0;
+  rsIdx = 0;
+  rsBuckets = [[], [], [], [], [], [], [], [], [], []];
+  rsBucketPos = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  rsInputArr = [];
+  rsSortedSet = new Set();
+  bsPhase = "distribute";
+  bsIdx = 0;
+  bsBuckets = [];
+  bsBucketCount = 0;
+  bsCurBucket = 0;
+  bsCurJ = 0;
+  bsCurK = 0;
+  bsRangeEnd = 0;
+  bsSortedUpTo = 0;
+  bsSortedSet = new Set();
+  // 猴子排序状态清零
+  bogoPhase = "shuffle";
+  bogoAttempt = 0;
+  bogoCheckIdx = 0;
+  bogoSortedSet = new Set();
+  bogoGaveUp = false;
+  // 睡眠排序状态清零
+  ssSrc = [];
+  ssWakeBuckets = [];
+  ssWokeFlag = [];
+  ssClock = 0;
+  ssMaxWake = 0;
+  ssOutPos = 0;
+  ssSortedSet = new Set();
+  // 煎饼排序状态清零
+  pkPhase = "scan";
+  pkHeap = 0;
+  pkScanIdx = 0;
+  pkMaxIdx = 0;
+  pkFlipTopIdx = 0;
+  pkFlipBackIdx = 0;
+  pkFlipL = 0;
+  pkFlipR = 0;
+  pkDoneSet = new Set();
+  // 奇迹排序状态清零
+  mrPhase = "pray";
+  mrCheckIdx = 0;
+  mrRound = 0;
+  mrPrayIdx = 0;
+  mrMiracleHappened = false;
+  mrPrayPos = -1;
+  mrSortedSet = new Set();
+  // 灭霸排序状态清零
+  thPhase = "snap";
+  thSnapCount = 0;
+  thDustTotal = 0;
+  thAlive = 0;
+  thDoomList = [];
+  thDoomSet = new Set();
+  thDoomIdx = 0;
+  thDoomPos = -1;
+  thCompactIdx = 0;
+  thCompactRead = 0;
+  thFlashAlpha = 0;
+  thSortedSet = new Set();
+  thAnimating = false;
+  thFinished = false;
+  thActive = false;
+  // 恢复灭霸按钮可点（重置后可重新开始响指）
+  btnThanosSort.disabled = false;
+  // 灭霸响指后条宽被放大过，重置时恢复原始条数宽度
+  unitW = canvasW / barCount;
+  const gapR = unitW > 2 ? 1 : 0;
+  barDrawW = Math.max(1, unitW - gapR);
+  // 隐藏排序原理简述
+  if (legendDesc) legendDesc.classList.remove("show");
+  statusBar.textContent = "";
+  render();
+});
+
+btnSort.addEventListener("click", () => {
+  startSort("bubble");
+});
+
+btnSelectSort.addEventListener("click", () => {
+  startSort("selection");
+});
+
+btnInsertSort.addEventListener("click", () => {
+  startSort("insertion");
+});
+
+btnQuickSort.addEventListener("click", () => {
+  startSort("quick");
+});
+
+btnMergeSort.addEventListener("click", () => {
+  startSort("merge");
+});
+
+btnHeapSort.addEventListener("click", () => {
+  startSort("heap");
+});
+
+btnCountSort.addEventListener("click", () => {
+  startSort("counting");
+});
+
+btnRadixSort.addEventListener("click", () => {
+  startSort("radix");
+});
+
+btnBucketSort.addEventListener("click", () => {
+  startSort("bucket");
+});
+
+btnBogoSort.addEventListener("click", () => {
+  startSort("bogo");
+});
+
+btnSleepSort.addEventListener("click", () => {
+  startSort("sleep");
+});
+
+btnPancakeSort.addEventListener("click", () => {
+  startSort("pancake");
+});
+
+btnMiracleSort.addEventListener("click", () => {
+  startSort("miracle");
+});
+
+btnThanosSort.addEventListener("click", () => {
+  thanosSnap();
+});
+
+// ── 灭霸排序：手动响指（不走 startSort 自动播放）──
+// 点一次响一次指；一轮动画（紫闪→湮灭→压实）跑完自动停下
+// 响过指后其他排序按钮禁用（数组已被湮灭，跑别的排序会出脏数据），重置后恢复
+function thanosSnap() {
+  if (isSorting || thFinished) return; // 动画中或已完美平衡，忽略点击
+  isSorting = true;
+  thAnimating = true;
+  thActive = true;
+  sortMode = "thanos";
+  // 图例右侧显示原理简述
+  if (legendDesc && SORT_DESC["thanos"]) {
+    legendDesc.textContent = SORT_DESC["thanos"];
+    legendDesc.classList.add("show");
+  }
+  // 首次响指才做初始化（后续响指延续上轮幸存状态）
+  if (thSnapCount === 0) {
+    scanPass = 0;
+    totalSwaps = 0;
+    totalScans = 0;
+    sortedFromIdx = -1;
+    thAlive = barCount;
+    thDoomList = [];
+    thDoomSet = new Set();
+    thDoomIdx = 0;
+    thDoomPos = -1;
+    thCompactIdx = 0;
+    thCompactRead = 0;
+    thFlashAlpha = 0;
+    thSortedSet = new Set();
+    thPhase = "snap";
+  }
+  // 禁用所有按钮（重置除外——灭霸中途想反悔可以重置）
+  btnSort.disabled = true;
+  btnSelectSort.disabled = true;
+  btnInsertSort.disabled = true;
+  btnQuickSort.disabled = true;
+  btnMergeSort.disabled = true;
+  btnHeapSort.disabled = true;
+  btnCountSort.disabled = true;
+  btnRadixSort.disabled = true;
+  btnBucketSort.disabled = true;
+  btnBogoSort.disabled = true;
+  btnSleepSort.disabled = true;
+  btnPancakeSort.disabled = true;
+  btnMiracleSort.disabled = true;
+  btnThanosSort.disabled = true;
+  btnReset.disabled = false;
+  // 起动本轮动画：灭霸手动模式固定每帧8步（湮灭+压实节奏看得清，一轮约1秒）
+  stepsPerFrame = 8;
+  sortRafId = requestAnimationFrame(sortFrame);
+}
+
+// 响应式（调整窗口时只重绘，不改竖条数量）
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  if (isSorting) return;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    resizeCanvas();
+    // 重新计算竖条宽度，但不重新生成
+    unitW = canvasW / barCount;
+    const gap = unitW > 2 ? 1 : 0;
+    barDrawW = Math.max(1, unitW - gap);
+    render();
+  }, 200);
+});
+
+// ── 启动 ──
+countInput.value = DEFAULT_BARS;
+resizeCanvas();
+calcBarCount();
+generateBars();
+render();
+</script>
+</body>
+</html>
